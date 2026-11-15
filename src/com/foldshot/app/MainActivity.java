@@ -3,6 +3,9 @@ package com.foldshot.app;
 import android.Manifest;
 import android.app.Activity;
 import android.app.AlertDialog;
+import android.content.ClipData;
+import android.content.ClipboardManager;
+import android.content.Context;
 import android.content.Intent;
 import android.graphics.Color;
 import android.graphics.Typeface;
@@ -38,6 +41,8 @@ import java.util.Set;
 public class MainActivity extends Activity {
 
     private static final String KEY_SCROLL_Y = "saved_scroll_y";
+    private static final int REQ_EXPORT_PROFILE = 201;
+    private static final int REQ_IMPORT_PROFILE = 202;
 
     private FoldShotPrefs prefs;
     private ScrollView scrollView;
@@ -59,6 +64,9 @@ public class MainActivity extends Activity {
         getWindow().setStatusBarColor(0xFF000000);
         getWindow().setNavigationBarColor(0xFF000000);
 
+        if (prefs.tryAutoRestoreFromDocuments()) {
+            Toast.makeText(this, "Restored saved FoldShot profile", Toast.LENGTH_LONG).show();
+        }
         requestMediaAndNotificationPermissions();
         startWatcherService(ScreenshotInterceptService.ACTION_RELOAD_OBSERVER);
         buildOneUiSettingsScreen();
@@ -94,8 +102,48 @@ public class MainActivity extends Activity {
     @Override
     public void onRequestPermissionsResult(int requestCode, String[] permissions, int[] grantResults) {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults);
+        if (prefs.tryAutoRestoreFromDocuments()) {
+            Toast.makeText(this, "Restored saved FoldShot profile", Toast.LENGTH_LONG).show();
+        }
         startWatcherService(ScreenshotInterceptService.ACTION_RELOAD_OBSERVER);
         buildOneUiSettingsScreen();
+    }
+
+    @Override
+    protected void onActivityResult(int requestCode, int resultCode, Intent data) {
+        super.onActivityResult(requestCode, resultCode, data);
+        if (resultCode != Activity.RESULT_OK || data == null || data.getData() == null) {
+            return;
+        }
+        Uri uri = data.getData();
+        if (requestCode == REQ_EXPORT_PROFILE) {
+            try {
+                int takeFlags = data.getFlags()
+                        & (Intent.FLAG_GRANT_READ_URI_PERMISSION | Intent.FLAG_GRANT_WRITE_URI_PERMISSION);
+                if (takeFlags != 0) {
+                    getContentResolver().takePersistableUriPermission(uri, takeFlags);
+                }
+            } catch (Exception ignored) {
+            }
+            if (prefs.exportProfileToUri(uri)) {
+                Toast.makeText(this, "Profile saved (folders & all settings)", Toast.LENGTH_LONG).show();
+                buildOneUiSettingsScreen();
+            } else {
+                Toast.makeText(this, "Could not write profile file", Toast.LENGTH_SHORT).show();
+            }
+        } else if (requestCode == REQ_IMPORT_PROFILE) {
+            if (prefs.importProfileFromUri(uri)) {
+                startWatcherService(ScreenshotInterceptService.ACTION_RELOAD_OBSERVER);
+                buildOneUiSettingsScreen();
+                Toast.makeText(
+                        this,
+                        "Profile restored (" + prefs.getAllowedFolders().size() + " folders & all settings)",
+                        Toast.LENGTH_LONG
+                ).show();
+            } else {
+                Toast.makeText(this, "Selected file is not a valid FoldShot profile", Toast.LENGTH_SHORT).show();
+            }
+        }
     }
 
     @Override
@@ -914,6 +962,124 @@ public class MainActivity extends Activity {
                     showSelectVisibleFoldersDialog();
                 })
                 .setNegativeButton("Back", (d, w) -> showSelectVisibleFoldersDialog())
+                .show();
+    }
+
+    private void launchExportProfilePicker() {
+        try {
+            prefs.syncAutoProfileBackupNow();
+            Intent intent = new Intent(Intent.ACTION_CREATE_DOCUMENT);
+            intent.addCategory(Intent.CATEGORY_OPENABLE);
+            intent.setType("application/json");
+            intent.putExtra(Intent.EXTRA_TITLE, FoldShotPrefs.PROFILE_FILE_NAME);
+            startActivityForResult(intent, REQ_EXPORT_PROFILE);
+        } catch (Exception e) {
+            Toast.makeText(this, "File picker unavailable — use Copy / Paste Profile JSON", Toast.LENGTH_LONG).show();
+            showProfileClipboardDialog();
+        }
+    }
+
+    private void launchImportProfilePicker() {
+        try {
+            Intent intent = new Intent(Intent.ACTION_OPEN_DOCUMENT);
+            intent.addCategory(Intent.CATEGORY_OPENABLE);
+            intent.setType("*/*");
+            intent.putExtra(
+                    Intent.EXTRA_MIME_TYPES,
+                    new String[]{"application/json", "text/plain", "application/octet-stream"}
+            );
+            startActivityForResult(intent, REQ_IMPORT_PROFILE);
+        } catch (Exception e) {
+            Toast.makeText(this, "File picker unavailable — use Copy / Paste Profile JSON", Toast.LENGTH_LONG).show();
+            showProfileClipboardDialog();
+        }
+    }
+
+    private void showProfileClipboardDialog() {
+        String currentJson = prefs.exportProfileJson();
+        String prefillJson = currentJson;
+        boolean detectedClipboard = false;
+
+        if (!prefs.hasUserConfiguredProfile()) {
+            try {
+                ClipboardManager cm = (ClipboardManager) getSystemService(Context.CLIPBOARD_SERVICE);
+                if (cm != null && cm.hasPrimaryClip() && cm.getPrimaryClip() != null
+                        && cm.getPrimaryClip().getItemCount() > 0) {
+                    CharSequence cs = cm.getPrimaryClip().getItemAt(0).coerceToText(this);
+                    if (cs != null) {
+                        String clip = cs.toString().trim();
+                        if (clip.startsWith("{") && clip.contains("\"folders\"")) {
+                            prefillJson = clip;
+                            detectedClipboard = true;
+                        }
+                    }
+                }
+            } catch (Exception ignored) {
+            }
+        }
+
+        final EditText input = new EditText(this);
+        input.setText(prefillJson);
+        input.setSelectAllOnFocus(true);
+        input.setTextSize(TypedValue.COMPLEX_UNIT_SP, 11.5f);
+        input.setMinLines(6);
+        input.setMaxLines(12);
+        input.setHorizontallyScrolling(false);
+
+        LinearLayout wrap = new LinearLayout(this);
+        wrap.setOrientation(LinearLayout.VERTICAL);
+        int p = dpInt(18);
+        wrap.setPadding(p, p / 2, p, p / 2);
+
+        TextView hint = new TextView(this);
+        hint.setText(detectedClipboard
+                ? "Detected FoldShot profile in Clipboard — tap Restore JSON to apply!"
+                : "Copy to back up your Folders & settings, or paste a saved FoldShot JSON profile and tap Restore JSON.");
+        hint.setTextColor(detectedClipboard ? 0xFF2AD181 : 0xFFA1A1AA);
+        hint.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12);
+        wrap.addView(hint);
+
+        LinearLayout.LayoutParams editLp = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT
+        );
+        editLp.topMargin = dpInt(10);
+        wrap.addView(input, editLp);
+
+        new AlertDialog.Builder(this, android.R.style.Theme_DeviceDefault_Dialog_Alert)
+                .setTitle("Settings Profile JSON")
+                .setView(wrap)
+                .setPositiveButton("Copy Profile", (d, w) -> {
+                    String json = prefs.exportProfileJson();
+                    ClipboardManager cm = (ClipboardManager) getSystemService(Context.CLIPBOARD_SERVICE);
+                    if (cm != null) {
+                        cm.setPrimaryClip(ClipData.newPlainText("FoldShot Profile", json));
+                    }
+                    prefs.syncAutoProfileBackupNow();
+                    Toast.makeText(this, "Profile JSON copied to clipboard", Toast.LENGTH_SHORT).show();
+                })
+                .setNeutralButton("Restore JSON", (d, w) -> {
+                    String candidate = input.getText().toString().trim();
+                    if (candidate.isEmpty()) {
+                        ClipboardManager cm = (ClipboardManager) getSystemService(Context.CLIPBOARD_SERVICE);
+                        if (cm != null && cm.hasPrimaryClip() && cm.getPrimaryClip() != null
+                                && cm.getPrimaryClip().getItemCount() > 0) {
+                            CharSequence cs = cm.getPrimaryClip().getItemAt(0).coerceToText(this);
+                            if (cs != null) candidate = cs.toString().trim();
+                        }
+                    }
+                    if (prefs.importProfileJson(candidate)) {
+                        startWatcherService(ScreenshotInterceptService.ACTION_RELOAD_OBSERVER);
+                        buildOneUiSettingsScreen();
+                        Toast.makeText(
+                                this,
+                                "Restored " + prefs.getAllowedFolders().size() + " folders & all settings",
+                                Toast.LENGTH_LONG
+                        ).show();
+                    } else {
+                        Toast.makeText(this, "Invalid FoldShot profile JSON", Toast.LENGTH_SHORT).show();
+                    }
+                })
+                .setNegativeButton("Close", null)
                 .show();
     }
 

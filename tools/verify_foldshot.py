@@ -303,6 +303,27 @@ def test_security_and_universal_oem_features():
         "ScreenshotInterceptService and ScreenshotEditorActivity use cropFullResolution and lossless original moves/saves"
     )
 
+    # 5i. Persistent Settings Profile (Backup, Export, Import, Auto-Restore across Uninstall/Reinstall)
+    assert_true(
+        "exportProfileJson" in prefs_src
+        and "importProfileJson" in prefs_src
+        and "exportProfileToUri" in prefs_src
+        and "importProfileFromUri" in prefs_src
+        and "tryAutoRestoreFromDocuments" in prefs_src
+        and "FoldShot_Profile.json" in prefs_src
+        and "allowed_folders" in prefs_src
+        and "pinned_albums" in prefs_src,
+        "FoldShotPrefs implements complete Settings Profile JSON export/import & Documents auto-backup"
+    )
+    assert_true(
+        "ACTION_CREATE_DOCUMENT" in main_src
+        and "ACTION_OPEN_DOCUMENT" in main_src
+        and "tryAutoRestoreFromDocuments" in main_src
+        and "showProfileClipboardDialog" in main_src
+        and "SETTINGS PROFILE (BACKUP & RESTORE)" in main_src,
+        "MainActivity provides SAF Export/Import, Clipboard JSON backup/restore, and auto-restore on fresh install"
+    )
+
     # 6. Expandable "More Folders" button on left of the 3 favorite folders (v2.1.0)
     assert_true("expandFoldersBtnRect" in view_src, "Small expand button rect declared on left of the 3 folders")
     assert_true("showMoreFoldersDrawer" in view_src, "In-overlay expanded folder selection drawer state implemented")
