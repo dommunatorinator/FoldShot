@@ -298,6 +298,51 @@ public class MainActivity extends Activity {
         ));
         rootContent.addView(permCard);
 
+        // 2a. Section: SETTINGS PROFILE (Survives APK Uninstall / Reinstall Updates)
+        addSectionHeader("SETTINGS PROFILE (BACKUP & RESTORE)");
+        LinearLayout profileCard = createOneUiCard();
+        boolean hasConfiguredProfile = prefs.hasUserConfiguredProfile();
+        String profileSummary = prefs.getProfileSummaryLine();
+        String backupSub = hasConfiguredProfile
+                ? (profileSummary + "\nAuto-saved to Documents/FoldShot/" + FoldShotPrefs.PROFILE_FILE_NAME)
+                : (profileSummary + "\nReinstalled APK? Tap Import below & pick Documents/FoldShot/" + FoldShotPrefs.PROFILE_FILE_NAME);
+
+        profileCard.addView(createPermissionRow(
+                "Saved Settings Profile",
+                backupSub,
+                hasConfiguredProfile ? "Synced" : "Backup",
+                hasConfiguredProfile,
+                v -> showProfileClipboardDialog()
+        ));
+        profileCard.addView(createDivider());
+
+        profileCard.addView(createPermissionRow(
+                "Save / Export Profile (.json)",
+                "Saves Visible Folders, Top 3 Albums, Triggers & Crop Settings for reinstall updates",
+                "Export",
+                false,
+                v -> launchExportProfilePicker()
+        ));
+        profileCard.addView(createDivider());
+
+        profileCard.addView(createPermissionRow(
+                "Restore / Import Profile (.json)",
+                "Load saved Folders & all settings from FoldShot_Profile.json after reinstalling",
+                "Import",
+                false,
+                v -> launchImportProfilePicker()
+        ));
+        profileCard.addView(createDivider());
+
+        profileCard.addView(createPermissionRow(
+                "Copy / Paste Profile JSON",
+                "1-tap copy or paste your profile JSON via Clipboard (fast no-file restore)",
+                "JSON",
+                false,
+                v -> showProfileClipboardDialog()
+        ));
+        rootContent.addView(profileCard);
+
         // 2b. Section: AUTO-OPEN TRIGGERS (Optional Extra Sources — OFF by default)
         addSectionHeader("AUTO-OPEN TRIGGERS");
         LinearLayout triggerCard = createOneUiCard();
