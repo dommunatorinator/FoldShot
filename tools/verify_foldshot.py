@@ -252,16 +252,36 @@ def test_security_and_universal_oem_features():
     # 5f. Strict Screenshot-Only Detection (Never trigger on Quick Share, Downloads, Messaging, etc.)
     assert_true(
         "isDirectHintUri" not in helper_src
-        and "isExcludedNonScreenshotLocation" in helper_src
+        and "isAlwaysBlockedNonScreenshotLocation" in helper_src
         and "extractParentDirLower" in helper_src
         and "\"quick share\"" in helper_src
         and "\"download\"" in helper_src
         and "IS_TRASHED" in helper_src,
-        "Strict Screenshot Filtering: blocks Quick Share, Downloads, messaging apps, trash, and arbitrary hintUri triggers"
+        "Strict Screenshot Filtering: blocks Quick Share, unrelated Downloads, messaging apps, trash, and arbitrary hintUri triggers"
     )
     assert_true(
         "lastHandledUri" in service_src and "lastHandledHeight" in service_src,
         "ScreenshotInterceptService prevents duplicate re-triggers on metadata updates or moves"
+    )
+
+    # 5g. Optional Messenger & Browser/Chrome Download Triggers (OFF by default)
+    assert_true(
+        "getBoolean(\"trigger_on_messenger\", false)" in prefs_src
+        and "getBoolean(\"trigger_on_browser_downloads\", false)" in prefs_src,
+        "FoldShotPrefs defines Messenger and Browser/Chrome download triggers OFF by default"
+    )
+    assert_true(
+        "isTriggerOnMessengerEnabled" in main_src
+        and "isTriggerOnBrowserDownloadsEnabled" in main_src
+        and "ACTION_RELOAD_OBSERVER" in main_src,
+        "MainActivity provides seamless switches for Messenger & Browser/Chrome downloads and reloads observer live"
+    )
+    assert_true(
+        "isMessengerFolder" in helper_src
+        and "isBrowserDownloadFolder" in helper_src
+        and "getWatchedCaptureDirs" in helper_src
+        and "getWatchedCaptureDirs" in service_src,
+        "MediaStoreHelper & ScreenshotInterceptService seamlessly watch Messenger & Browser download folders when enabled"
     )
 
     # 6. Expandable "More Folders" button on left of the 3 favorite folders (v2.1.0)

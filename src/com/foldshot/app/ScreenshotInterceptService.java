@@ -409,13 +409,18 @@ public class ScreenshotInterceptService extends Service {
         dirObservers.clear();
 
         int mask = FileObserver.CLOSE_WRITE | FileObserver.MOVED_TO | FileObserver.CREATE;
-        for (final File dir : MediaStoreHelper.getCommonScreenshotDirs(getApplicationContext())) {
+        FoldShotPrefs prefs = new FoldShotPrefs(this);
+        for (final File dir : MediaStoreHelper.getWatchedCaptureDirs(getApplicationContext(), prefs)) {
             try {
                 if (!dir.exists() || !dir.isDirectory()) continue;
                 FileObserver obs = new FileObserver(dir, mask) {
                     @Override
                     public void onEvent(int event, String path) {
                         if (path == null || path.startsWith(".") || path.startsWith("FoldShot_")) return;
+                        String lowerPath = path.toLowerCase(java.util.Locale.US);
+                        if (lowerPath.endsWith(".crdownload") || lowerPath.endsWith(".tmp") || lowerPath.endsWith(".part")) {
+                            return;
+                        }
                         final File f = new File(dir, path);
                         try {
                             MediaScannerConnection.scanFile(

@@ -250,6 +250,32 @@ public class MainActivity extends Activity {
         ));
         rootContent.addView(permCard);
 
+        // 2b. Section: AUTO-OPEN TRIGGERS (Optional Extra Sources — OFF by default)
+        addSectionHeader("AUTO-OPEN TRIGGERS");
+        LinearLayout triggerCard = createOneUiCard();
+
+        triggerCard.addView(createSwitchRow(
+                "Activate on Messenger images",
+                "Off by default • Auto-open FoldShot when saving images from Messenger",
+                prefs.isTriggerOnMessengerEnabled(),
+                checked -> {
+                    prefs.setTriggerOnMessengerEnabled(checked);
+                    startWatcherService(ScreenshotInterceptService.ACTION_RELOAD_OBSERVER);
+                }
+        ));
+        triggerCard.addView(createDivider());
+
+        triggerCard.addView(createSwitchRow(
+                "Activate on Browser / Chrome downloads",
+                "Off by default • Auto-open FoldShot when downloading images in Chrome or browsers",
+                prefs.isTriggerOnBrowserDownloadsEnabled(),
+                checked -> {
+                    prefs.setTriggerOnBrowserDownloadsEnabled(checked);
+                    startWatcherService(ScreenshotInterceptService.ACTION_RELOAD_OBSERVER);
+                }
+        ));
+        rootContent.addView(triggerCard);
+
         // 3. Section: VISIBLE & USABLE FOLDERS
         addSectionHeader("VISIBLE & USABLE FOLDERS");
         LinearLayout filterCard = createOneUiCard();

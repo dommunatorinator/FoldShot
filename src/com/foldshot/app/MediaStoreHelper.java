@@ -483,10 +483,8 @@ public class MediaStoreHelper {
      * Collects all potential screenshot folders across internal storage AND any removable/secondary StorageVolumes.
      */
     @SuppressWarnings("deprecation")
-    public static List<File> getCommonScreenshotDirs(Context context) {
-        Set<File> dirs = new LinkedHashSet<>();
+    private static List<File> getStorageRoots(Context context) {
         List<File> roots = new ArrayList<>();
-
         File primary = Environment.getExternalStorageDirectory();
         if (primary != null) roots.add(primary);
 
@@ -504,7 +502,11 @@ public class MediaStoreHelper {
             } catch (Exception ignored) {
             }
         }
+        return roots;
+    }
 
+    public static List<File> getCommonScreenshotDirs(Context context) {
+        Set<File> dirs = new LinkedHashSet<>();
         String[] rels = new String[]{
                 "Pictures/Screenshots",
                 "DCIM/Screenshots",
@@ -518,7 +520,7 @@ public class MediaStoreHelper {
                 "OnePlus/Screenshots"
         };
 
-        for (File root : roots) {
+        for (File root : getStorageRoots(context)) {
             for (String r : rels) {
                 dirs.add(new File(root, r));
             }
@@ -526,11 +528,86 @@ public class MediaStoreHelper {
         return new ArrayList<>(dirs);
     }
 
+    public static List<File> getMessengerDirs(Context context) {
+        Set<File> dirs = new LinkedHashSet<>();
+        String[] rels = new String[]{
+                "Pictures/Messenger",
+                "DCIM/Messenger",
+                "Pictures/Facebook Messenger",
+                "Messenger"
+        };
+        for (File root : getStorageRoots(context)) {
+            for (String r : rels) {
+                dirs.add(new File(root, r));
+            }
+        }
+        return new ArrayList<>(dirs);
+    }
+
+    public static List<File> getBrowserDownloadDirs(Context context) {
+        Set<File> dirs = new LinkedHashSet<>();
+        String[] rels = new String[]{
+                "Download",
+                "Downloads",
+                "Download/Chrome",
+                "Download/Browser",
+                "Download/Samsung Internet",
+                "Download/Firefox",
+                "Download/Edge",
+                "Download/Brave",
+                "Download/Opera",
+                "Pictures/Browser",
+                "Pictures/Chrome"
+        };
+        for (File root : getStorageRoots(context)) {
+            for (String r : rels) {
+                dirs.add(new File(root, r));
+            }
+        }
+        return new ArrayList<>(dirs);
+    }
+
+    public static List<File> getWatchedCaptureDirs(Context context, FoldShotPrefs prefs) {
+        Set<File> dirs = new LinkedHashSet<>(getCommonScreenshotDirs(context));
+        if (prefs != null) {
+            if (prefs.isTriggerOnMessengerEnabled()) {
+                dirs.addAll(getMessengerDirs(context));
+            }
+            if (prefs.isTriggerOnBrowserDownloadsEnabled()) {
+                dirs.addAll(getBrowserDownloadDirs(context));
+            }
+        }
+        return new ArrayList<>(dirs);
+    }
+
     public static ScreenshotData findLatestScreenshotFileOnDisk(Context context, long minModifiedSec) {
+        FoldShotPrefs prefs = new FoldShotPrefs(context);
+        return findLatestScreenshotFileOnDisk(
+                context,
+                minModifiedSec,
+                prefs.isTriggerOnMessengerEnabled(),
+                prefs.isTriggerOnBrowserDownloadsEnabled()
+        );
+    }
+
+    public static ScreenshotData findLatestScreenshotFileOnDisk(
+            Context context,
+            long minModifiedSec,
+            boolean allowMessenger,
+            boolean allowBrowserDownloads
+    ) {
         File newestFile = null;
         long newestModMs = 0L;
 
-        for (File dir : getCommonScreenshotDirs(context)) {
+        List<File> scanDirs = new ArrayList<>(getCommonScreenshotDirs(context));
+        if (allowMessenger) {
+            scanDirs.addAll(getMessengerDirs(context));
+        }
+        if (allowBrowserDownloads) {
+            scanDirs.addAll(getBrowserDownloadDirs(context));
+        }
+
+        for (File dir : scanDirs) {
             if (!dir.exists() || !dir.isDirectory()) continue;
             File[] files = dir.listFiles();
             if (files == null) continue;
@@ -574,6 +651,9 @@ public class MediaStoreHelper {
         ContentResolver resolver = context.getContentResolver();
         List<int[]> displayDims = getAllDisplayDimensions(context);
         long nowSec = System.currentTimeMillis() / 1000L;
+        FoldShotPrefs prefs = new FoldShotPrefs(context);
+        boolean allowMessenger = prefs.isTriggerOnMessengerEnabled();
+        boolean allowBrowserDownloads = prefs.isTriggerOnBrowserDownloadsEnabled();
 
         List<String> projList = new ArrayList<>();
         projList.add(MediaStore.Images.Media._ID);
@@ -594,7 +674,7 @@ public class MediaStoreHelper {
 
         if (hintUri != null && hintUri.getLastPathSegment() != null && hintUri.getLastPathSegment().matches("\\d+")) {
             try (Cursor c = resolver.query(hintUri, projection, null, null, null)) {
-                ScreenshotData fromHint = extractScreenshotFromCursor(c, displayDims, nowSec);
+                ScreenshotData fromHint = extractScreenshotFromCursor(c, displayDims, nowSec, allowMessenger, allowBrowserDownloads);
                 if (fromHint != null) return fromHint;
             } catch (Exception ignored) {
             }
@@ -607,12 +687,12 @@ public class MediaStoreHelper {
                 null,
                 sortOrder
         )) {
-            ScreenshotData data = extractScreenshotFromCursor(cursor, displayDims, nowSec);
+            ScreenshotData data = extractScreenshotFromCursor(cursor, displayDims, nowSec, allowMessenger, allowBrowserDownloads);
             if (data != null) return data;
         } catch (Exception ignored) {
         }
 
-        return findLatestScreenshotFileOnDisk(context, nowSec - 15L);
+        return findLatestScreenshotFileOnDisk(context, nowSec - 15L, allowMessenger, allowBrowserDownloads);
     }
 
     private static String extractParentDirLower(String dataPath) {
@@ -622,10 +702,50 @@ public class MediaStoreHelper {
         return dataPath.substring(0, lastSlash + 1).toLowerCase(Locale.US);
     }
 
-    private static boolean isExcludedNonScreenshotLocation(String lowerPath, String lowerBucket, String lowerDirData) {
+    private static boolean isMessengerFolder(String lowerPath, String lowerBucket, String lowerDirData) {
+        return lowerPath.contains("/messenger")
+                || lowerPath.startsWith("messenger")
+                || lowerBucket.equals("messenger")
+                || lowerBucket.equals("facebook messenger")
+                || lowerDirData.contains("/messenger/")
+                || lowerDirData.contains("/facebook messenger/");
+    }
+
+    private static boolean isBrowserDownloadFolder(String lowerPath, String lowerBucket, String lowerDirData) {
+        if (lowerPath.equals("download/")
+                || lowerPath.equals("downloads/")
+                || lowerPath.equals("download")
+                || lowerPath.equals("downloads")) {
+            return true;
+        }
+        String[] browserPaths = new String[]{
+                "download/chrome",
+                "download/browser",
+                "download/samsung internet",
+                "download/firefox",
+                "download/edge",
+                "download/brave",
+                "download/opera",
+                "pictures/chrome",
+                "pictures/browser"
+        };
+        for (String bp : browserPaths) {
+            if (lowerPath.contains(bp) || lowerDirData.contains("/" + bp + "/")) {
+                return true;
+            }
+        }
+        if (lowerPath.isEmpty() && (lowerDirData.endsWith("/download/") || lowerDirData.endsWith("/downloads/"))) {
+            return true;
+        }
+        return (lowerBucket.equals("download") || lowerBucket.equals("downloads") || lowerBucket.equals("chrome"))
+                && !lowerPath.contains("quick share")
+                && !lowerPath.contains("nearby")
+                && !lowerPath.contains("bluetooth");
+    }
+
+    private static boolean isAlwaysBlockedNonScreenshotLocation(String lowerPath, String lowerBucket, String lowerDirData, boolean isMessengerDir) {
         String combined = lowerPath + " | " + lowerBucket + " | " + lowerDirData;
         String[] blockedTokens = new String[]{
-                "download",
                 "quick share",
                 "quickshare",
                 "nearby share",
@@ -637,9 +757,7 @@ public class MediaStoreHelper {
                 "localsend",
                 "whatsapp",
                 "telegram",
-                "messenger",
                 "instagram",
-                "facebook",
                 "snapchat",
                 "tiktok",
                 "discord",
@@ -679,6 +797,9 @@ public class MediaStoreHelper {
                 return true;
             }
         }
+        if (!isMessengerDir && combined.contains("facebook")) {
+            return true;
+        }
         return false;
     }
 
@@ -696,7 +817,13 @@ public class MediaStoreHelper {
     }
 
     @SuppressWarnings("deprecation")
-    private static ScreenshotData extractScreenshotFromCursor(Cursor cursor, List<int[]> displayDims, long nowSec) {
+    private static ScreenshotData extractScreenshotFromCursor(
+            Cursor cursor,
+            List<int[]> displayDims,
+            long nowSec,
+            boolean allowMessenger,
+            boolean allowBrowserDownloads
+    ) {
         if (cursor == null) return null;
         int idCol = cursor.getColumnIndex(MediaStore.Images.Media._ID);
         int nameCol = cursor.getColumnIndex(MediaStore.Images.Media.DISPLAY_NAME);
@@ -726,22 +853,39 @@ public class MediaStoreHelper {
             String relPath = pathCol >= 0 ? cursor.getString(pathCol) : null;
             String dataPath = dataCol >= 0 ? cursor.getString(dataCol) : null;
 
-            if (name != null && name.startsWith("FoldShot_")) continue;
+            if (name != null && (name.startsWith("FoldShot_") || name.startsWith("."))) continue;
 
             String lowerName = name != null ? name.toLowerCase(Locale.US) : "";
+            if (lowerName.endsWith(".crdownload") || lowerName.endsWith(".tmp") || lowerName.endsWith(".part")) {
+                continue;
+            }
             String lowerBucket = bucket != null ? bucket.toLowerCase(Locale.US) : "";
             String lowerPath = relPath != null ? relPath.toLowerCase(Locale.US) : "";
             String lowerDirData = extractParentDirLower(dataPath);
 
-            // Never trigger on received transfers (Quick Share, Nearby Share, Bluetooth), browser downloads,
-            // messaging/social apps, or editor/wallpaper directories—even if the received image is named Screenshot_*!
-            if (isExcludedNonScreenshotLocation(lowerPath, lowerBucket, lowerDirData)) continue;
+            boolean isMessengerDir = isMessengerFolder(lowerPath, lowerBucket, lowerDirData);
+            boolean isBrowserDir = isBrowserDownloadFolder(lowerPath, lowerBucket, lowerDirData);
 
-            // Skip obvious non-screenshot camera/messaging/downloaded filenames
-            if (lowerName.startsWith("received_") || lowerName.startsWith("fb_img_")
-                    || lowerName.startsWith("pxl_") || lowerName.startsWith("dsc")
-                    || lowerName.startsWith("mvimg_") || lowerName.contains("-wa0")) {
+            // Never trigger on Quick Share, Nearby Share, Bluetooth, other messaging/social apps,
+            // editor/wallpaper directories, or trashed/hidden directories.
+            if (isAlwaysBlockedNonScreenshotLocation(lowerPath, lowerBucket, lowerDirData, isMessengerDir)) continue;
+
+            // Block download directories unless explicitly enabled for Browser / Chrome downloads
+            if ((lowerPath.contains("download") || lowerBucket.contains("download") || lowerDirData.contains("/download"))
+                    && !(allowBrowserDownloads && isBrowserDir)) {
                 continue;
+            }
+            if (isMessengerDir && !allowMessenger) {
+                continue;
+            }
+
+            // Skip obvious camera/other-app filenames when not in Messenger or Browser Downloads
+            if (!isMessengerDir && !isBrowserDir) {
+                if (lowerName.startsWith("received_") || lowerName.startsWith("fb_img_")
+                        || lowerName.startsWith("pxl_") || lowerName.startsWith("dsc")
+                        || lowerName.startsWith("mvimg_") || lowerName.contains("-wa0")) {
+                    continue;
+                }
             }
 
             long rawAdd = dateAddCol >= 0 ? cursor.getLong(dateAddCol) : 0L;
@@ -759,16 +903,22 @@ public class MediaStoreHelper {
             int imgH = hCol >= 0 ? cursor.getInt(hCol) : 0;
 
             boolean explicitScreenshotName = hasScreenshotMarker(lowerName) || lowerName.contains("screen-");
-            boolean isScreenshotDir = hasScreenshotMarker(lowerPath)
-                    || hasScreenshotMarker(lowerBucket)
-                    || hasScreenshotMarker(lowerDirData);
+            boolean isScreenshotDir = !isMessengerDir && !isBrowserDir && (
+                    hasScreenshotMarker(lowerPath)
+                            || hasScreenshotMarker(lowerBucket)
+                            || hasScreenshotMarker(lowerDirData)
+            );
 
             // Some OPPO / Realme ColorOS devices store "Screenshot_*.jpg" directly inside DCIM/Camera!
             boolean isCameraDir = lowerPath.contains("dcim/camera")
                     || lowerBucket.equals("camera")
                     || lowerDirData.contains("/dcim/camera/");
 
-            if (!isScreenshotDir && !(isCameraDir && explicitScreenshotName)) {
+            boolean allowedByScreenshot = isScreenshotDir || (isCameraDir && explicitScreenshotName);
+            boolean allowedByMessenger = allowMessenger && isMessengerDir;
+            boolean allowedByBrowser = allowBrowserDownloads && isBrowserDir;
+
+            if (!allowedByScreenshot && !allowedByMessenger && !allowedByBrowser) {
                 continue;
             }
 
@@ -1032,24 +1182,44 @@ public class MediaStoreHelper {
                         if (rel != null && !rel.trim().isEmpty()) {
                             String clean = rel.trim();
                             if (!clean.endsWith("/")) clean = clean + "/";
-                            return clean;
+                            if (hasScreenshotMarker(clean.toLowerCase(Locale.US))) {
+                                return clean;
+                            }
                         }
                     }
                 }
             } catch (Exception ignored) {
             }
         }
+        if (isSamsungDevice() || isXiaomiDevice() || isVivoDevice()) {
+            return "DCIM/Screenshots/";
+        }
         return "Pictures/Screenshots/";
     }
 
     public static boolean saveCroppedScreenshot(Context context, Activity optionalActivity, Uri sourceUri, Bitmap cropped, boolean isFullCrop) {
         if (cropped == null) return false;
-        if (isFullCrop && sourceUri != null && !Uri.EMPTY.equals(sourceUri)) {
-            return true;
-        }
-
         ContentResolver resolver = context.getContentResolver();
         String relFolder = resolveScreenshotRelativePath(context, sourceUri);
+
+        if (isFullCrop && sourceUri != null && !Uri.EMPTY.equals(sourceUri)) {
+            boolean alreadyInScreenshots = false;
+            if ("content".equalsIgnoreCase(sourceUri.getScheme())) {
+                try (Cursor c = resolver.query(sourceUri, new String[]{MediaStore.Images.Media.RELATIVE_PATH}, null, null, null)) {
+                    if (c != null && c.moveToFirst()) {
+                        int idx = c.getColumnIndex(MediaStore.Images.Media.RELATIVE_PATH);
+                        if (idx >= 0) {
+                            String rel = c.getString(idx);
+                            alreadyInScreenshots = rel != null && hasScreenshotMarker(rel.toLowerCase(Locale.US));
+                        }
+                    }
+                } catch (Exception ignored) {
+                }
+            }
+            if (alreadyInScreenshots) {
+                return true;
+            }
+        }
 
         try {
             ContentValues values = new ContentValues();

@@ -241,4 +241,26 @@ public class FoldShotPrefs {
         float clamped = Math.max(8f, Math.min(420f, clearanceDp));
         prefs.edit().putFloat("dock_bottom_clearance_dp", clamped).apply();
     }
+
+    /**
+     * Optional auto-open trigger for images saved/downloaded from Facebook Messenger (OFF by default).
+     */
+    public boolean isTriggerOnMessengerEnabled() {
+        return prefs.getBoolean("trigger_on_messenger", false);
+    }
+
+    public void setTriggerOnMessengerEnabled(boolean enabled) {
+        prefs.edit().putBoolean("trigger_on_messenger", enabled).apply();
+    }
+
+    /**
+     * Optional auto-open trigger for images downloaded from Chrome or mobile browsers (OFF by default).
+     */
+    public boolean isTriggerOnBrowserDownloadsEnabled() {
+        return prefs.getBoolean("trigger_on_browser_downloads", false);
+    }
+
+    public void setTriggerOnBrowserDownloadsEnabled(boolean enabled) {
+        prefs.edit().putBoolean("trigger_on_browser_downloads", enabled).apply();
+    }
 }
