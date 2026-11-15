@@ -1,6 +1,5 @@
 package com.foldshot.app;
 
-import android.animation.ValueAnimator;
 import android.content.Context;
 import android.content.res.Configuration;
 import android.graphics.Bitmap;
@@ -20,13 +19,14 @@ import android.view.HapticFeedbackConstants;
 import android.view.MotionEvent;
 import android.view.View;
 import android.view.WindowManager;
-import android.view.animation.DecelerateInterpolator;
 
 import java.util.ArrayList;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Set;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 
 /**
  * Full-Height Smart Capture Overlay with Thumb-Reachable Preview Area & 120Hz Touch-to-Crop Engine.
@@ -34,8 +34,10 @@ import java.util.Set;
  * - Overlay backdrop spans from immediately below the status bar all the way to the physical bottom edge of the screen.
  * - Screenshot preview area (imgBounds) is scaled down inside the safe thumb zone (default 82%, adjustable 75% / 82% / 90%)
  *   so all 4 corner handles and edges are effortless to reach with one hand.
- * - Includes small Expand Folders button on the left of the 3 pinned albums to reveal all Gallery albums in 1 tap.
- * - Inline Redact (blackout) & Highlight Pen tools + Aspect Ratio Lock pills.
+ * - Staged Two-Tier Rendering:
+ *   - Tier 1 (Frame 1, 0ms I/O): Screenshot, crop frame, top actions, 3 main folder pills, and Copy & Delete capsule.
+ *   - Tier 2 (Deferred off main thread ~180ms post-attach): Highlight/Redact/Undo tool pill, MediaStore top-3 sync,
+ *     and Extra Folders drawer preloading.
  * - Holding the minimize chevron inside Expanded Folders for 3 seconds saves privately to the Hidden Vault.
  * - 100% custom vector iconography (zero emojis).
  */
@@ -70,6 +72,8 @@ public class OneUiSmartCaptureView extends View {
     private static final int TOOL_REDACT = 1;
     private static final int TOOL_PEN = 2;
     private static final long HOLD_VAULT_MS = 3000L;
+    private static final long TIER2_PRELOAD_DELAY_MS = 180L;
+    private static final ExecutorService PRELOAD_EXECUTOR = Executors.newSingleThreadExecutor();
 
     private final FoldShotPrefs prefs;
     private final Listener listener;
@@ -79,6 +83,15 @@ public class OneUiSmartCaptureView extends View {
 
     // True when ScreenshotInterceptService already positions the window at y = statusBarHeightPx
     private boolean windowStartsBelowStatusBar = false;
+
+    // Cached Tier-1 state so onDraw() performs zero I/O and zero WindowMetrics IPC
+    private String[] cachedTopThreeAlbums = new String[]{"Receipts", "Work", "Saved"};
+    private float cachedTopOffsetPx = 0f;
+    private float cachedNavBottomInsetPx = 0f;
+    private boolean secondaryToolsReady = false;
+    private boolean extraFoldersLoaded = false;
+    private boolean extraFoldersLoading = false;
+    private volatile boolean isDetached = false;
 
     // Normalized crop box [0..1]
     private final RectF crop = new RectF(0f, 0f, 1f, 1f);
@@ -134,6 +147,12 @@ public class OneUiSmartCaptureView extends View {
     private boolean vaultHoldTriggered = false;
     private long vaultHoldStartMs = 0L;
     private final RectF activeHoldTargetRect = new RectF();
+    private final Runnable tier2PreloadRunnable = () -> {
+        if (isDetached) return;
+        secondaryToolsReady = true;
+        invalidate();
+        refreshFoldersAndExtraChoicesAsync();
+    };
     private final Runnable vaultHoldTickRunnable = new Runnable() {
         @Override
         public void run() {
@@ -166,7 +185,7 @@ public class OneUiSmartCaptureView extends View {
     private float touchScreenX = 0f, touchScreenY = 0f;
     private float dragStartY = 0f;
     private float initialClearanceDp = 18f;
-    private float entranceProgress = 0f;
+    private float entranceProgress = 1f;
 
     private final Paint paint = new Paint(Paint.ANTI_ALIAS_FLAG);
     private final Paint shadowPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
@@ -180,15 +199,9 @@ public class OneUiSmartCaptureView extends View {
         this.listener = listener;
         this.windowManager = (WindowManager) context.getSystemService(Context.WINDOW_SERVICE);
         updateDensityFromContext();
-
-        ValueAnimator anim = ValueAnimator.ofFloat(0f, 1f);
-        anim.setDuration(200L);
-        anim.setInterpolator(new DecelerateInterpolator(1.8f));
-        anim.addUpdateListener(a -> {
-            entranceProgress = (float) a.getAnimatedValue();
-            invalidate();
-        });
-        anim.start();
+        updateGeometryCache();
+        this.cachedTopThreeAlbums = prefs.resolveTopThreeAlbumsFast();
+        this.entranceProgress = 1f;
     }
 
     @SuppressWarnings("deprecation")
@@ -222,11 +235,13 @@ public class OneUiSmartCaptureView extends View {
 
     public void refreshDisplayDensity() {
         updateDensityFromContext();
+        updateGeometryCache();
         invalidate();
     }
 
     public void setWindowStartsBelowStatusBar(boolean startsBelowStatusBar) {
         this.windowStartsBelowStatusBar = startsBelowStatusBar;
+        updateGeometryCache();
         invalidate();
     }
 
@@ -236,13 +251,23 @@ public class OneUiSmartCaptureView extends View {
 
     public void setScreenshotBitmap(Bitmap bmp) {
         this.screenshotBitmap = bmp;
+        this.cachedTopThreeAlbums = prefs.resolveTopThreeAlbumsFast();
         redactRects.clear();
         penStrokes.clear();
         markupOrder.clear();
         activeRedactDraft = null;
         activePenDraft = null;
         activeTool = TOOL_CROP;
+        if (isAttachedToWindow()) {
+            scheduleTier2Preload();
+        }
         invalidate();
+    }
+
+    private void scheduleTier2Preload() {
+        vaultHoldHandler.removeCallbacks(tier2PreloadRunnable);
+        if (isDetached) return;
+        vaultHoldHandler.postDelayed(tier2PreloadRunnable, TIER2_PRELOAD_DELAY_MS);
     }
 
     public RectF getNormalizedCrop() {
@@ -416,11 +441,17 @@ public class OneUiSmartCaptureView extends View {
     @Override
     protected void onAttachedToWindow() {
         super.onAttachedToWindow();
+        isDetached = false;
         updateDensityFromContext();
+        updateGeometryCache();
+        cachedTopThreeAlbums = prefs.resolveTopThreeAlbumsFast();
+        scheduleTier2Preload();
     }
 
     @Override
     protected void onDetachedFromWindow() {
+        isDetached = true;
+        vaultHoldHandler.removeCallbacks(tier2PreloadRunnable);
         vaultHoldHandler.removeCallbacks(vaultHoldRunnable);
         vaultHoldHandler.removeCallbacks(vaultHoldTickRunnable);
         super.onDetachedFromWindow();
@@ -430,6 +461,7 @@ public class OneUiSmartCaptureView extends View {
     protected void onSizeChanged(int w, int h, int oldw, int oldh) {
         super.onSizeChanged(w, h, oldw, oldh);
         updateDensityFromContext();
+        updateGeometryCache();
         invalidate();
     }
 
@@ -437,21 +469,31 @@ public class OneUiSmartCaptureView extends View {
     protected void onConfigurationChanged(Configuration newConfig) {
         super.onConfigurationChanged(newConfig);
         updateDensityFromContext();
+        updateGeometryCache();
         listener.onDeviceConfigChanged();
         invalidate();
+    }
+
+    private void updateGeometryCache() {
+        try {
+            MediaStoreHelper.ScreenGeometry geo = MediaStoreHelper.getScreenGeometry(getContext(), windowManager);
+            cachedTopOffsetPx = windowStartsBelowStatusBar ? 0f : geo.statusBarHeightPx;
+            cachedNavBottomInsetPx = Math.min(geo.navBarBottomInsetPx, 48f * dp);
+        } catch (Exception ignored) {
+            cachedTopOffsetPx = windowStartsBelowStatusBar ? 0f : 28f * dp;
+            cachedNavBottomInsetPx = 24f * dp;
+        }
     }
 
     private float getTopOffsetUnderStatusBarPx() {
         if (windowStartsBelowStatusBar) {
             return 0f;
         }
-        MediaStoreHelper.ScreenGeometry geo = MediaStoreHelper.getScreenGeometry(getContext(), windowManager);
-        return geo.statusBarHeightPx;
+        return cachedTopOffsetPx;
     }
 
     private float getBottomNavInsetPx() {
-        MediaStoreHelper.ScreenGeometry geo = MediaStoreHelper.getScreenGeometry(getContext(), windowManager);
-        return Math.min(geo.navBarBottomInsetPx, 48f * dp);
+        return cachedNavBottomInsetPx;
     }
 
     /**
@@ -525,6 +567,7 @@ public class OneUiSmartCaptureView extends View {
             RectF cardShadow = new RectF(imgBounds.left - 2f * dp, imgBounds.top + 4f * dp, imgBounds.right + 2f * dp, imgBounds.bottom + 6f * dp);
             canvas.drawRoundRect(cardShadow, 14f * dp, 14f * dp, shadowPaint);
 
+            paint.setAlpha(255);
             canvas.drawBitmap(screenshotBitmap, null, imgBounds, paint);
 
             // Render inline Redact blackouts & Highlight pen strokes clipped to preview bounds
@@ -658,7 +701,7 @@ public class OneUiSmartCaptureView extends View {
         float albumsBarTop = mainBarTop - 44f * dp;
 
         // Row A: Slim Favorite Albums Capsule (Grip Handle + Small Expand Folders Btn + 3 Favorite Slots + Add/Edit)
-        String[] albums = prefs.resolveTopThreeAlbums();
+        String[] albums = cachedTopThreeAlbums;
         float albumsBarW = Math.min(w - 20f * dp, 386f * dp);
         float albumsBarLeft = (w - albumsBarW) / 2f;
         RectF albumsBarRect = new RectF(albumsBarLeft, albumsBarTop, albumsBarLeft + albumsBarW, albumsBarTop + 36f * dp);
@@ -688,7 +731,7 @@ public class OneUiSmartCaptureView extends View {
         int visibleSlotCount = 0;
         for (int i = 0; i < 3; i++) {
             float sl = albumsBarLeft + 56f * dp + i * slotW;
-            String rawLabel = albums[i] != null ? albums[i].trim() : "";
+            String rawLabel = (albums != null && albums[i] != null) ? albums[i].trim() : "";
             if (rawLabel.isEmpty() || !prefs.isFolderUsable(rawLabel)) {
                 albumPillRects[i].setEmpty();
                 continue;
@@ -783,8 +826,8 @@ public class OneUiSmartCaptureView extends View {
             canvas.drawCircle(lx, ly, r, paint);
         }
 
-        // 8b. Inline Tool Pill (Crop | Redact | Pen | Undo) when top-left popover is closed
-        if (!showCornerPopover) {
+        // 8b. Tier-2 Inline Tool Pill (Crop | Redact | Pen | Undo), loaded after Tier-1 overlay renders
+        if (secondaryToolsReady && !showCornerPopover) {
             float toolBarTop = topBarY + 42f * dp;
             float toolPillW = 196f * dp;
             RectF toolContainer = new RectF(w - 14f * dp - toolPillW, toolBarTop, w - 14f * dp, toolBarTop + 30f * dp);
@@ -922,8 +965,8 @@ public class OneUiSmartCaptureView extends View {
 
         // 10. Expandable "More Folders" Floating Drawer above Row A (toggled by expandFoldersBtnRect)
         if (showMoreFoldersDrawer) {
-            if (cachedExtraFolders.isEmpty()) {
-                refreshExtraFolderChoices();
+            if (!extraFoldersLoaded && !extraFoldersLoading) {
+                refreshFoldersAndExtraChoicesAsync();
             }
             int total = cachedExtraFolders.size();
             int perPage = 9;
@@ -1020,9 +1063,11 @@ public class OneUiSmartCaptureView extends View {
                 paint.setTypeface(mediumTypeface);
                 paint.setColor(0xFF8E8E93);
                 paint.setTextSize(11.2f * dp);
-                String emptyMsg = prefs.getAllowedFolders().isEmpty()
+                String emptyMsg = extraFoldersLoading
+                        ? "Loading folders..."
+                        : (prefs.getAllowedFolders().isEmpty()
                         ? "No folders enabled. Tap 'Select Folders' above."
-                        : "All selected folders are already shown below.";
+                        : "All selected folders are already shown below.");
                 canvas.drawText(emptyMsg, gridLeft + 4f * dp, gridTop + 20f * dp, paint);
             } else {
                 for (int i = 0; i < pageItems; i++) {
@@ -1078,13 +1123,33 @@ public class OneUiSmartCaptureView extends View {
         }
     }
 
-    private void refreshExtraFolderChoices() {
-        cachedExtraFolders.clear();
-        String[] top3 = prefs.resolveTopThreeAlbums();
+    private void refreshFoldersAndExtraChoicesAsync() {
+        if (isDetached || extraFoldersLoading) return;
+        extraFoldersLoading = true;
+        final Context appCtx = getContext().getApplicationContext();
+        PRELOAD_EXECUTOR.execute(() -> {
+            String[] resolvedTop3 = prefs.resolveTopThreeAlbums();
+            List<FolderChoice> builtExtra = buildExtraFolderChoices(appCtx, resolvedTop3);
+            post(() -> {
+                extraFoldersLoading = false;
+                extraFoldersLoaded = true;
+                if (isDetached) return;
+                cachedTopThreeAlbums = resolvedTop3;
+                cachedExtraFolders.clear();
+                cachedExtraFolders.addAll(builtExtra);
+                invalidate();
+            });
+        });
+    }
+
+    private List<FolderChoice> buildExtraFolderChoices(Context appCtx, String[] top3) {
+        List<FolderChoice> built = new ArrayList<>();
         Set<String> excluded = new LinkedHashSet<>();
-        for (String s : top3) {
-            if (s != null && !s.trim().isEmpty()) {
-                excluded.add(s.trim().toLowerCase(Locale.US));
+        if (top3 != null) {
+            for (String s : top3) {
+                if (s != null && !s.trim().isEmpty()) {
+                    excluded.add(s.trim().toLowerCase(Locale.US));
+                }
             }
         }
 
@@ -1092,7 +1157,7 @@ public class OneUiSmartCaptureView extends View {
         int[] palette = new int[]{0xFF387AFF, 0xFF2AD181, 0xFFFFAB2E, 0xFFA78BFA, 0xFF38BDF8, 0xFFFB7185};
         int colorIdx = 0;
 
-        List<MediaStoreHelper.GalleryAlbumInfo> albums = MediaStoreHelper.queryDeviceGalleryAlbums(getContext());
+        List<MediaStoreHelper.GalleryAlbumInfo> albums = MediaStoreHelper.queryDeviceGalleryAlbums(appCtx);
         for (MediaStoreHelper.GalleryAlbumInfo info : albums) {
             if (info.bucketName == null) continue;
             String trimmed = info.bucketName.trim();
@@ -1100,7 +1165,7 @@ public class OneUiSmartCaptureView extends View {
             if (excluded.contains(key)) continue;
             if (allowlistOnly && !prefs.isFolderUsable(trimmed)) continue;
             excluded.add(key);
-            cachedExtraFolders.add(new FolderChoice(trimmed, info.itemCount, palette[colorIdx % palette.length]));
+            built.add(new FolderChoice(trimmed, info.itemCount, palette[colorIdx % palette.length]));
             colorIdx++;
         }
 
@@ -1111,21 +1176,22 @@ public class OneUiSmartCaptureView extends View {
                 String key = trimmed.toLowerCase(Locale.US);
                 if (excluded.contains(key)) continue;
                 excluded.add(key);
-                cachedExtraFolders.add(new FolderChoice(trimmed, 0, palette[colorIdx % palette.length]));
+                built.add(new FolderChoice(trimmed, 0, palette[colorIdx % palette.length]));
                 colorIdx++;
             }
-            return;
+            return built;
         }
 
         String[] suggestions = new String[]{"Receipts", "Work", "Travel", "IDs", "Design", "Shopping", "Finance", "Notes", "Personal"};
         for (String sug : suggestions) {
-            if (cachedExtraFolders.size() >= 9) break;
+            if (built.size() >= 9) break;
             String key = sug.toLowerCase(Locale.US);
             if (excluded.contains(key)) continue;
             excluded.add(key);
-            cachedExtraFolders.add(new FolderChoice(sug, 0, palette[colorIdx % palette.length]));
+            built.add(new FolderChoice(sug, 0, palette[colorIdx % palette.length]));
             colorIdx++;
         }
+        return built;
     }
 
     private void drawExpandFoldersIcon(Canvas canvas, float cx, float cy, float s, boolean expanded, int color) {
@@ -1489,7 +1555,9 @@ public class OneUiSmartCaptureView extends View {
             if (showMoreFoldersDrawer) {
                 showCornerPopover = false;
                 folderDrawerPage = 0;
-                refreshExtraFolderChoices();
+                if (!extraFoldersLoaded && !extraFoldersLoading) {
+                    refreshFoldersAndExtraChoicesAsync();
+                }
             }
             performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK);
             invalidate();
@@ -1555,9 +1623,10 @@ public class OneUiSmartCaptureView extends View {
                 return true;
             }
         }
-        String[] albums = prefs.resolveTopThreeAlbums();
+        String[] albums = cachedTopThreeAlbums;
         for (int i = 0; i < 3; i++) {
-            if (!albumPillRects[i].isEmpty() && albumPillRects[i].contains(x, y) && prefs.isFolderUsable(albums[i])) {
+            if (!albumPillRects[i].isEmpty() && albumPillRects[i].contains(x, y)
+                    && albums != null && albums[i] != null && prefs.isFolderUsable(albums[i])) {
                 performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK);
                 listener.onMoveToAlbum(i, albums[i], getNormalizedCrop());
                 return true;
@@ -1652,9 +1721,10 @@ public class OneUiSmartCaptureView extends View {
                     listener.onOpenSettings();
                     return true;
                 }
-                String[] albums = prefs.resolveTopThreeAlbums();
+                String[] albums = cachedTopThreeAlbums;
                 for (int i = 0; i < 3; i++) {
-                    if (!albumPillRects[i].isEmpty() && albumPillRects[i].contains(x, y) && prefs.isFolderUsable(albums[i])) {
+                    if (!albumPillRects[i].isEmpty() && albumPillRects[i].contains(x, y)
+                            && albums != null && albums[i] != null && prefs.isFolderUsable(albums[i])) {
                         showMoreFoldersDrawer = false;
                         performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK);
                         listener.onMoveToAlbum(i, albums[i], getNormalizedCrop());

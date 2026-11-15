@@ -122,6 +122,7 @@ public class FoldShotPrefs {
             }
         }
         prefs.edit().putString(KEY_ALLOWED_FOLDERS, sb.toString()).apply();
+        MediaStoreHelper.invalidateAlbumCache();
         markConfiguredAndBackup();
     }
 
@@ -153,6 +154,22 @@ public class FoldShotPrefs {
             }
         }
         return false;
+    }
+
+    /**
+     * Zero-I/O fast resolution for Frame 1 overlay display (reads SharedPreferences only, never queries MediaStore).
+     */
+    public String[] resolveTopThreeAlbumsFast() {
+        if (isFolderAllowlistEnabled()) {
+            return resolveTopThreeFromAllowlist();
+        }
+        String[] defaults = new String[]{"Receipts", "Work", "Saved"};
+        String[] result = new String[3];
+        for (int i = 0; i < 3; i++) {
+            String pinned = prefs.getString("pinned_album_" + i, null);
+            result[i] = (pinned != null && !pinned.trim().isEmpty()) ? pinned.trim() : defaults[i];
+        }
+        return result;
     }
 
     public String[] resolveTopThreeAlbums() {
@@ -231,6 +248,7 @@ public class FoldShotPrefs {
         } else {
             prefs.edit().putString("pinned_album_" + index, name.trim()).apply();
         }
+        MediaStoreHelper.invalidateAlbumCache();
         markConfiguredAndBackup();
     }
 
@@ -244,6 +262,7 @@ public class FoldShotPrefs {
             }
         }
         editor.apply();
+        MediaStoreHelper.invalidateAlbumCache();
         markConfiguredAndBackup();
     }
 

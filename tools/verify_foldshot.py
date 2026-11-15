@@ -430,6 +430,35 @@ def test_security_and_universal_oem_features():
         "Folder move & Copy & Delete resolve file:// URIs and prompt fallback cleanly without leaving duplicates in DCIM/Screenshots"
     )
 
+    # 5n. Zero-Lag Overlay Launch, Staged Tier-1/Tier-2 Loading & Background Detection
+    ondraw_start = view_src.find("protected void onDraw(Canvas canvas)")
+    ondraw_end = view_src.find("private void refreshFoldersAndExtraChoicesAsync()", ondraw_start)
+    assert_true(ondraw_start > 0 and ondraw_end > ondraw_start, "Located OneUiSmartCaptureView.onDraw() body")
+    ondraw_body = view_src[ondraw_start:ondraw_end]
+    assert_true(
+        "queryDeviceGalleryAlbums" not in ondraw_body
+        and "prefs.resolveTopThreeAlbums(" not in ondraw_body
+        and "getScreenGeometry" not in ondraw_body
+        and "cachedTopThreeAlbums" in ondraw_body
+        and "paint.setAlpha(255)" in ondraw_body,
+        "OneUiSmartCaptureView.onDraw() performs zero MediaStore queries and zero WindowMetrics IPC, drawing screenshot at full alpha on Frame 1"
+    )
+    assert_true(
+        "resolveTopThreeAlbumsFast" in prefs_src
+        and "resolveTopThreeAlbumsFast" in view_src
+        and "secondaryToolsReady" in view_src
+        and "PRELOAD_EXECUTOR" in view_src
+        and "ALBUM_CACHE_TTL_MS" in helper_src
+        and "invalidateAlbumCache" in helper_src,
+        "Staged Tier-1/Tier-2 overlay preloading and 10s album TTL cache implemented cleanly"
+    )
+    assert_true(
+        "detectionExecutor" in service_src
+        and "inspectLatestScreenshotAsync" in service_src
+        and "hasPendingInspectSchedule" in service_src,
+        "ScreenshotInterceptService runs MediaStore queries & Bitmap decoding off main thread with coalesced scheduling"
+    )
+
     # 6. Expandable "More Folders" button on left of the 3 favorite folders (v2.1.0)
     assert_true("expandFoldersBtnRect" in view_src, "Small expand button rect declared on left of the 3 folders")
     assert_true("showMoreFoldersDrawer" in view_src, "In-overlay expanded folder selection drawer state implemented")

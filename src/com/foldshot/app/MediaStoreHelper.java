@@ -477,7 +477,29 @@ public class MediaStoreHelper {
         }
     }
 
+    private static final long ALBUM_CACHE_TTL_MS = 10_000L;
+    private static List<GalleryAlbumInfo> cachedGalleryAlbums = null;
+    private static long cachedGalleryAlbumsTimeMs = 0L;
+
+    public static void invalidateAlbumCache() {
+        synchronized (MediaStoreHelper.class) {
+            cachedGalleryAlbums = null;
+            cachedGalleryAlbumsTimeMs = 0L;
+        }
+    }
+
     public static List<GalleryAlbumInfo> queryDeviceGalleryAlbums(Context context) {
+        long nowMs = System.currentTimeMillis();
+        synchronized (MediaStoreHelper.class) {
+            if (cachedGalleryAlbums != null && (nowMs - cachedGalleryAlbumsTimeMs) < ALBUM_CACHE_TTL_MS) {
+                List<GalleryAlbumInfo> copy = new ArrayList<>(cachedGalleryAlbums.size());
+                for (GalleryAlbumInfo info : cachedGalleryAlbums) {
+                    copy.add(new GalleryAlbumInfo(info.bucketName, info.relativePath, info.itemCount));
+                }
+                return copy;
+            }
+        }
+
         Map<String, GalleryAlbumInfo> map = new LinkedHashMap<>();
         ContentResolver resolver = context.getContentResolver();
         String[] projection = new String[]{
@@ -525,7 +547,12 @@ public class MediaStoreHelper {
             }
         } catch (Exception ignored) {
         }
-        return new ArrayList<>(map.values());
+        List<GalleryAlbumInfo> fresh = new ArrayList<>(map.values());
+        synchronized (MediaStoreHelper.class) {
+            cachedGalleryAlbums = fresh;
+            cachedGalleryAlbumsTimeMs = System.currentTimeMillis();
+        }
+        return new ArrayList<>(fresh);
     }
 
     /**
@@ -1862,6 +1889,7 @@ public class MediaStoreHelper {
             ContentValues done = new ContentValues();
             done.put(MediaStore.Images.Media.IS_PENDING, 0);
             resolver.update(inserted, done, null, null);
+            invalidateAlbumCache();
             return true;
         } catch (Exception e) {
             if (inserted != null) {
@@ -1890,6 +1918,7 @@ public class MediaStoreHelper {
                     moveVals.put(MediaStore.MediaColumns.RELATIVE_PATH, relFolder);
                     if (resolver.update(resolvedSource, moveVals, null, null) > 0) {
                         recordOwnSavedOutput(resolvedSource, null);
+                        invalidateAlbumCache();
                         return true;
                     }
                 } catch (Exception ignored) {
@@ -1925,6 +1954,7 @@ public class MediaStoreHelper {
             ContentValues done = new ContentValues();
             done.put(MediaStore.Images.Media.IS_PENDING, 0);
             resolver.update(inserted, done, null, null);
+            invalidateAlbumCache();
 
             if (resolvedSource != null && !Uri.EMPTY.equals(resolvedSource)) {
                 deleteScreenshotSilently(context, optionalActivity, resolvedSource);
@@ -1998,6 +2028,7 @@ public class MediaStoreHelper {
                     moveVals.put(MediaStore.MediaColumns.RELATIVE_PATH, relFolder);
                     if (resolver.update(resolvedSource, moveVals, null, null) > 0) {
                         recordOwnSavedOutput(resolvedSource, null);
+                        invalidateAlbumCache();
                         return true;
                     }
                 } catch (Exception ignored) {
@@ -2033,6 +2064,7 @@ public class MediaStoreHelper {
             ContentValues done = new ContentValues();
             done.put(MediaStore.Images.Media.IS_PENDING, 0);
             resolver.update(inserted, done, null, null);
+            invalidateAlbumCache();
 
             if (resolvedSource != null && !Uri.EMPTY.equals(resolvedSource)) {
                 deleteScreenshotSilently(context, optionalActivity, resolvedSource);

@@ -36,15 +36,18 @@ import android.widget.Toast;
 import java.io.File;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 
 /**
  * Universal Play-Protect-Safe Background Screenshot Utility Service (v2.0.0):
  * - Encompasses Samsung One UI, Xiaomi MIUI/HyperOS, Infinix/Tecno XOS, OPPO/Realme/OnePlus ColorOS,
  *   Vivo/iQOO FuntouchOS/OriginOS, Huawei/Honor EMUI/MagicOS, Pixel, Motorola, Nothing, Sony, Asus.
  * - Triple-Engine Screenshot Detection:
- *   1) MediaStore ContentObserver (with direct hintUri & 4.2s IS_PENDING retry window)
+ *   1) MediaStore ContentObserver (with direct hintUri & 2.5s IS_PENDING retry window)
  *   2) Modern FileObserver(File, mask) across all internal & external StorageVolume screenshot folders
  *   3) Interactive screen heartbeat check (catches screenshots even when OEM OS suppresses ContentObserver)
+ * - Runs all MediaStore queries, disk scans, and Bitmap decoding on a background detectionExecutor.
  */
 public class ScreenshotInterceptService extends Service {
 
@@ -52,6 +55,10 @@ public class ScreenshotInterceptService extends Service {
     public static final String ACTION_RELOAD_OBSERVER = "com.foldshot.app.ACTION_RELOAD_OBSERVER";
 
     private final Handler handler = new Handler(Looper.getMainLooper());
+    private final ExecutorService detectionExecutor = Executors.newSingleThreadExecutor();
+    private final Object inspectLock = new Object();
+    private volatile boolean serviceDestroyed = false;
+
     private DisplayManager displayManager;
     private int activeDisplayId = Display.DEFAULT_DISPLAY;
     private Context overlayUiContext;
@@ -73,21 +80,27 @@ public class ScreenshotInterceptService extends Service {
     };
 
     private final List<FileObserver> dirObservers = new ArrayList<>();
-    private Uri latestHintUri = null;
-    private String lastHandledKey = null;
-    private Uri lastHandledUri = null;
-    private long lastHandledModSec = 0L;
-    private int lastHandledHeight = 0;
+    private volatile Uri latestHintUri = null;
+    private volatile String lastHandledKey = null;
+    private volatile Uri lastHandledUri = null;
+    private volatile long lastHandledModSec = 0L;
+    private volatile int lastHandledHeight = 0;
     private long serviceStartSec = 0L;
+    private boolean hasPendingInspectSchedule = false;
+    private boolean inspectionInFlight = false;
+    private boolean queuedInspection = false;
 
     // Holds previous screenshot bitmap when user taps Scroll Capture to stitch multiple shots
-    private Bitmap pendingStitchBitmap = null;
-    private Uri pendingStitchFirstUri = null;
+    private volatile Bitmap pendingStitchBitmap = null;
+    private volatile Uri pendingStitchFirstUri = null;
 
     private final Runnable checkMediaStoreRunnable = new Runnable() {
         @Override
         public void run() {
-            inspectLatestScreenshot(latestHintUri);
+            synchronized (inspectLock) {
+                hasPendingInspectSchedule = false;
+            }
+            inspectLatestScreenshotAsync(latestHintUri);
         }
     };
 
@@ -95,13 +108,15 @@ public class ScreenshotInterceptService extends Service {
         @Override
         public void run() {
             try {
-                if (powerManager == null || powerManager.isInteractive()) {
-                    inspectLatestScreenshot(null);
+                if (!serviceDestroyed && (powerManager == null || powerManager.isInteractive())) {
+                    inspectLatestScreenshotAsync(null);
                     MediaStoreHelper.runAutoExpireCleanup(getApplicationContext(), false);
                 }
             } catch (Exception ignored) {
             }
-            handler.postDelayed(this, 1400L);
+            if (!serviceDestroyed) {
+                handler.postDelayed(this, 1400L);
+            }
         }
     };
 
@@ -114,17 +129,66 @@ public class ScreenshotInterceptService extends Service {
     };
 
     private void scheduleInspect(Uri hintUri) {
-        if (hintUri != null) {
+        if (serviceDestroyed) return;
+        boolean hadNewHint = (hintUri != null);
+        if (hadNewHint) {
             latestHintUri = hintUri;
         }
+        synchronized (inspectLock) {
+            if (hasPendingInspectSchedule && !hadNewHint) {
+                return;
+            }
+            hasPendingInspectSchedule = true;
+        }
         handler.removeCallbacks(checkMediaStoreRunnable);
-        long[] delays = new long[]{120L, 400L, 800L, 1400L, 2200L, 3200L, 4200L};
+        long[] delays = new long[]{50L, 180L, 420L, 850L, 1500L, 2500L};
         for (long d : delays) {
             handler.postDelayed(checkMediaStoreRunnable, d);
         }
     }
 
-    private void inspectLatestScreenshot(Uri hintUri) {
+    private void inspectLatestScreenshotAsync(final Uri hintUri) {
+        if (serviceDestroyed) return;
+        synchronized (inspectLock) {
+            if (inspectionInFlight) {
+                queuedInspection = true;
+                if (hintUri != null) {
+                    latestHintUri = hintUri;
+                }
+                return;
+            }
+            inspectionInFlight = true;
+        }
+        final Uri effectiveHint = hintUri != null ? hintUri : latestHintUri;
+        try {
+            detectionExecutor.execute(() -> {
+                try {
+                    inspectLatestScreenshotWorker(effectiveHint);
+                } finally {
+                    boolean runAgain = false;
+                    Uri nextHint = null;
+                    synchronized (inspectLock) {
+                        inspectionInFlight = false;
+                        if (queuedInspection && !serviceDestroyed) {
+                            queuedInspection = false;
+                            runAgain = true;
+                            nextHint = latestHintUri;
+                        }
+                    }
+                    if (runAgain) {
+                        inspectLatestScreenshotAsync(nextHint);
+                    }
+                }
+            });
+        } catch (Exception ignored) {
+            synchronized (inspectLock) {
+                inspectionInFlight = false;
+            }
+        }
+    }
+
+    private void inspectLatestScreenshotWorker(Uri hintUri) {
+        if (serviceDestroyed) return;
         MediaStoreHelper.ScreenshotData latest = MediaStoreHelper.queryLatestScreenshot(getApplicationContext(), hintUri);
         if (latest == null) return;
 
@@ -146,26 +210,44 @@ public class ScreenshotInterceptService extends Service {
         if (isSameFile && !isUpdatedScrollCapture) return;
 
         Bitmap newBmp = MediaStoreHelper.loadBitmap(getApplicationContext(), latest.uri);
-        if (newBmp == null) return;
+        if (newBmp == null || serviceDestroyed) return;
 
-        lastHandledKey = currentKey;
-        lastHandledUri = latest.uri;
-        lastHandledModSec = latest.dateModifiedSec;
-        lastHandledHeight = Math.max(latest.height, newBmp.getHeight());
+        final Bitmap displayBmp;
+        final boolean didStitch;
+        synchronized (inspectLock) {
+            boolean duplicate = (currentKey.equals(lastHandledKey)
+                    || latest.uri.toString().equals(lastHandledKey)
+                    || (lastHandledUri != null && lastHandledUri.equals(latest.uri)))
+                    && !((latest.dateModifiedSec > lastHandledModSec) && (latest.height > lastHandledHeight));
+            if (duplicate) return;
 
-        if (pendingStitchBitmap != null && !isSameFile) {
-            Bitmap combined = MediaStoreHelper.stitchBitmapsVertically(pendingStitchBitmap, newBmp);
-            if (pendingStitchFirstUri != null && !pendingStitchFirstUri.equals(latest.uri)) {
-                MediaStoreHelper.deleteScreenshotSilently(getApplicationContext(), null, pendingStitchFirstUri);
+            lastHandledKey = currentKey;
+            lastHandledUri = latest.uri;
+            lastHandledModSec = latest.dateModifiedSec;
+            lastHandledHeight = Math.max(latest.height, newBmp.getHeight());
+
+            if (pendingStitchBitmap != null && !isSameFile) {
+                displayBmp = MediaStoreHelper.stitchBitmapsVertically(pendingStitchBitmap, newBmp);
+                if (pendingStitchFirstUri != null && !pendingStitchFirstUri.equals(latest.uri)) {
+                    MediaStoreHelper.deleteScreenshotSilently(getApplicationContext(), null, pendingStitchFirstUri);
+                }
+                pendingStitchBitmap = null;
+                pendingStitchFirstUri = null;
+                didStitch = true;
+            } else {
+                displayBmp = newBmp;
+                didStitch = false;
             }
-            pendingStitchBitmap = null;
-            pendingStitchFirstUri = null;
-            showAutoOpenHud(latest.uri, combined, true);
-            Toast.makeText(getApplicationContext(), "Long Screenshot stitched!", Toast.LENGTH_SHORT).show();
-            return;
         }
 
-        showAutoOpenHud(latest.uri, newBmp, false);
+        final Uri targetUri = latest.uri;
+        handler.post(() -> {
+            if (serviceDestroyed) return;
+            showAutoOpenHud(targetUri, displayBmp, didStitch);
+            if (didStitch) {
+                Toast.makeText(getApplicationContext(), "Long Screenshot stitched!", Toast.LENGTH_SHORT).show();
+            }
+        });
     }
 
     private final DisplayManager.DisplayListener displayListener = new DisplayManager.DisplayListener() {
@@ -617,15 +699,24 @@ public class ScreenshotInterceptService extends Service {
 
         if (intent != null && ACTION_TEST_OVERLAY.equals(intent.getAction())) {
             registerAllScreenshotWatchers();
-            MediaStoreHelper.ScreenshotData latest = MediaStoreHelper.queryLatestScreenshot(getApplicationContext(), null);
-            if (latest != null) {
-                Bitmap b = MediaStoreHelper.loadBitmap(getApplicationContext(), latest.uri);
-                if (b != null) {
-                    showAutoOpenHud(latest.uri, b);
-                    return START_STICKY;
+            detectionExecutor.execute(() -> {
+                MediaStoreHelper.ScreenshotData latest = MediaStoreHelper.queryLatestScreenshot(getApplicationContext(), null);
+                Uri targetUri = Uri.EMPTY;
+                Bitmap b = null;
+                if (latest != null) {
+                    b = MediaStoreHelper.loadBitmap(getApplicationContext(), latest.uri);
+                    if (b != null) {
+                        targetUri = latest.uri;
+                    }
                 }
-            }
-            showAutoOpenHud(Uri.EMPTY, createSampleOneUiBitmap(1));
+                final Uri finalUri = targetUri;
+                final Bitmap finalBmp = b != null ? b : createSampleOneUiBitmap(1);
+                handler.post(() -> {
+                    if (!serviceDestroyed) {
+                        showAutoOpenHud(finalUri, finalBmp);
+                    }
+                });
+            });
         }
         return START_STICKY;
     }
@@ -704,6 +795,10 @@ public class ScreenshotInterceptService extends Service {
 
     @Override
     public void onDestroy() {
+        serviceDestroyed = true;
+        handler.removeCallbacks(checkMediaStoreRunnable);
+        handler.removeCallbacks(interactiveHeartbeatRunnable);
+        detectionExecutor.shutdownNow();
         removeActiveOverlay();
         if (screenOffReceiverRegistered) {
             try {
@@ -718,7 +813,6 @@ public class ScreenshotInterceptService extends Service {
             } catch (Exception ignored) {
             }
         }
-        handler.removeCallbacks(interactiveHeartbeatRunnable);
         for (FileObserver fo : dirObservers) {
             try {
                 fo.stopWatching();
