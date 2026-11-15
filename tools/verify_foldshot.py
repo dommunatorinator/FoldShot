@@ -249,6 +249,21 @@ def test_security_and_universal_oem_features():
         "Reset Crop button icon uses crisp counter-clockwise circular arrow with connected arrowhead"
     )
 
+    # 5f. Strict Screenshot-Only Detection (Never trigger on Quick Share, Downloads, Messaging, etc.)
+    assert_true(
+        "isDirectHintUri" not in helper_src
+        and "isExcludedNonScreenshotLocation" in helper_src
+        and "extractParentDirLower" in helper_src
+        and "\"quick share\"" in helper_src
+        and "\"download\"" in helper_src
+        and "IS_TRASHED" in helper_src,
+        "Strict Screenshot Filtering: blocks Quick Share, Downloads, messaging apps, trash, and arbitrary hintUri triggers"
+    )
+    assert_true(
+        "lastHandledUri" in service_src and "lastHandledHeight" in service_src,
+        "ScreenshotInterceptService prevents duplicate re-triggers on metadata updates or moves"
+    )
+
     # 6. Expandable "More Folders" button on left of the 3 favorite folders (v2.1.0)
     assert_true("expandFoldersBtnRect" in view_src, "Small expand button rect declared on left of the 3 folders")
     assert_true("showMoreFoldersDrawer" in view_src, "In-overlay expanded folder selection drawer state implemented")

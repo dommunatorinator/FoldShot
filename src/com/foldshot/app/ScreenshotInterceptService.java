@@ -61,7 +61,9 @@ public class ScreenshotInterceptService extends Service {
     private final List<FileObserver> dirObservers = new ArrayList<>();
     private Uri latestHintUri = null;
     private String lastHandledKey = null;
+    private Uri lastHandledUri = null;
     private long lastHandledModSec = 0L;
+    private int lastHandledHeight = 0;
     private long serviceStartSec = 0L;
 
     // Holds previous screenshot bitmap when user taps Scroll Capture to stitch multiple shots
@@ -119,8 +121,12 @@ public class ScreenshotInterceptService extends Service {
                 ? latest.filePath
                 : (latest.uri.toString() + "|" + latest.displayName);
 
-        boolean isSameFile = currentKey.equals(lastHandledKey) || latest.uri.toString().equals(lastHandledKey);
-        boolean isUpdatedScrollCapture = isSameFile && (latest.dateModifiedSec > lastHandledModSec);
+        boolean isSameFile = currentKey.equals(lastHandledKey)
+                || latest.uri.toString().equals(lastHandledKey)
+                || (lastHandledUri != null && lastHandledUri.equals(latest.uri));
+        boolean isUpdatedScrollCapture = isSameFile
+                && (latest.dateModifiedSec > lastHandledModSec)
+                && (latest.height > lastHandledHeight);
 
         if (isSameFile && !isUpdatedScrollCapture) return;
 
@@ -128,7 +134,9 @@ public class ScreenshotInterceptService extends Service {
         if (newBmp == null) return;
 
         lastHandledKey = currentKey;
+        lastHandledUri = latest.uri;
         lastHandledModSec = latest.dateModifiedSec;
+        lastHandledHeight = Math.max(latest.height, newBmp.getHeight());
 
         if (pendingStitchBitmap != null && !isSameFile) {
             Bitmap combined = MediaStoreHelper.stitchBitmapsVertically(pendingStitchBitmap, newBmp);

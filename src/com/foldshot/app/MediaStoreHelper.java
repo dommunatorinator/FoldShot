@@ -575,23 +575,26 @@ public class MediaStoreHelper {
         List<int[]> displayDims = getAllDisplayDimensions(context);
         long nowSec = System.currentTimeMillis() / 1000L;
 
-        String[] projection = new String[]{
-                MediaStore.Images.Media._ID,
-                MediaStore.Images.Media.DISPLAY_NAME,
-                MediaStore.Images.Media.BUCKET_DISPLAY_NAME,
-                MediaStore.Images.Media.DATE_ADDED,
-                MediaStore.Images.Media.DATE_MODIFIED,
-                MediaStore.Images.Media.WIDTH,
-                MediaStore.Images.Media.HEIGHT,
-                MediaStore.Images.Media.RELATIVE_PATH,
-                MediaStore.Images.Media.DATA,
-                MediaStore.Images.Media.IS_PENDING
-        };
+        List<String> projList = new ArrayList<>();
+        projList.add(MediaStore.Images.Media._ID);
+        projList.add(MediaStore.Images.Media.DISPLAY_NAME);
+        projList.add(MediaStore.Images.Media.BUCKET_DISPLAY_NAME);
+        projList.add(MediaStore.Images.Media.DATE_ADDED);
+        projList.add(MediaStore.Images.Media.DATE_MODIFIED);
+        projList.add(MediaStore.Images.Media.WIDTH);
+        projList.add(MediaStore.Images.Media.HEIGHT);
+        projList.add(MediaStore.Images.Media.RELATIVE_PATH);
+        projList.add(MediaStore.Images.Media.DATA);
+        projList.add(MediaStore.Images.Media.IS_PENDING);
+        if (Build.VERSION.SDK_INT >= 30) {
+            projList.add(MediaStore.MediaColumns.IS_TRASHED);
+        }
+        String[] projection = projList.toArray(new String[0]);
         String sortOrder = MediaStore.Images.Media.DATE_ADDED + " DESC, " + MediaStore.Images.Media._ID + " DESC";
 
         if (hintUri != null && hintUri.getLastPathSegment() != null && hintUri.getLastPathSegment().matches("\\d+")) {
             try (Cursor c = resolver.query(hintUri, projection, null, null, null)) {
-                ScreenshotData fromHint = extractScreenshotFromCursor(c, displayDims, nowSec, true);
+                ScreenshotData fromHint = extractScreenshotFromCursor(c, displayDims, nowSec);
                 if (fromHint != null) return fromHint;
             } catch (Exception ignored) {
             }
@@ -604,7 +607,7 @@ public class MediaStoreHelper {
                 null,
                 sortOrder
         )) {
-            ScreenshotData data = extractScreenshotFromCursor(cursor, displayDims, nowSec, false);
+            ScreenshotData data = extractScreenshotFromCursor(cursor, displayDims, nowSec);
             if (data != null) return data;
         } catch (Exception ignored) {
         }
@@ -612,8 +615,88 @@ public class MediaStoreHelper {
         return findLatestScreenshotFileOnDisk(context, nowSec - 15L);
     }
 
+    private static String extractParentDirLower(String dataPath) {
+        if (dataPath == null || dataPath.isEmpty()) return "";
+        int lastSlash = dataPath.lastIndexOf('/');
+        if (lastSlash <= 0) return "";
+        return dataPath.substring(0, lastSlash + 1).toLowerCase(Locale.US);
+    }
+
+    private static boolean isExcludedNonScreenshotLocation(String lowerPath, String lowerBucket, String lowerDirData) {
+        String combined = lowerPath + " | " + lowerBucket + " | " + lowerDirData;
+        String[] blockedTokens = new String[]{
+                "download",
+                "quick share",
+                "quickshare",
+                "nearby share",
+                "nearby_share",
+                "bluetooth",
+                "shareit",
+                "xender",
+                "sendanywhere",
+                "localsend",
+                "whatsapp",
+                "telegram",
+                "messenger",
+                "instagram",
+                "facebook",
+                "snapchat",
+                "tiktok",
+                "discord",
+                "reddit",
+                "twitter",
+                "viber",
+                "wechat",
+                "kakaotalk",
+                "signal",
+                "slack",
+                "skype",
+                "teams",
+                "zoom",
+                "threads",
+                "pinterest",
+                "tumblr",
+                "gmail",
+                "outlook",
+                "dropbox",
+                "onedrive",
+                "snapseed",
+                "lightroom",
+                "canva",
+                "picsart",
+                "vsco",
+                "wallpaper",
+                ".trash",
+                "trashed",
+                "recycle",
+                ".thumbnails",
+                "/android/data/",
+                "/android/obb/",
+                "/android/media/"
+        };
+        for (String tok : blockedTokens) {
+            if (combined.contains(tok)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private static boolean hasScreenshotMarker(String s) {
+        return s.contains("screenshot")
+                || s.contains("screencap")
+                || s.contains("screen_cap")
+                || s.contains("captura")
+                || s.contains("schirmfoto")
+                || s.contains("tangkapan")
+                || s.contains("snimok")
+                || s.contains("스크린샷")
+                || s.contains("スクリーンショット")
+                || s.contains("截屏");
+    }
+
     @SuppressWarnings("deprecation")
-    private static ScreenshotData extractScreenshotFromCursor(Cursor cursor, List<int[]> displayDims, long nowSec, boolean isDirectHintUri) {
+    private static ScreenshotData extractScreenshotFromCursor(Cursor cursor, List<int[]> displayDims, long nowSec) {
         if (cursor == null) return null;
         int idCol = cursor.getColumnIndex(MediaStore.Images.Media._ID);
         int nameCol = cursor.getColumnIndex(MediaStore.Images.Media.DISPLAY_NAME);
@@ -625,6 +708,9 @@ public class MediaStoreHelper {
         int pathCol = cursor.getColumnIndex(MediaStore.Images.Media.RELATIVE_PATH);
         int dataCol = cursor.getColumnIndex(MediaStore.Images.Media.DATA);
         int pendingCol = cursor.getColumnIndex(MediaStore.Images.Media.IS_PENDING);
+        int trashedCol = Build.VERSION.SDK_INT >= 30
+                ? cursor.getColumnIndex(MediaStore.MediaColumns.IS_TRASHED)
+                : -1;
 
         int fallbackW = !displayDims.isEmpty() ? displayDims.get(0)[0] : 1080;
         int fallbackH = !displayDims.isEmpty() ? displayDims.get(0)[1] : 2400;
@@ -633,6 +719,7 @@ public class MediaStoreHelper {
         while (cursor.moveToNext() && checked < 35) {
             checked++;
             if (pendingCol >= 0 && cursor.getInt(pendingCol) == 1) continue;
+            if (trashedCol >= 0 && cursor.getInt(trashedCol) == 1) continue;
 
             String name = nameCol >= 0 ? cursor.getString(nameCol) : null;
             String bucket = bucketCol >= 0 ? cursor.getString(bucketCol) : null;
@@ -644,48 +731,46 @@ public class MediaStoreHelper {
             String lowerName = name != null ? name.toLowerCase(Locale.US) : "";
             String lowerBucket = bucket != null ? bucket.toLowerCase(Locale.US) : "";
             String lowerPath = relPath != null ? relPath.toLowerCase(Locale.US) : "";
-            String lowerData = dataPath != null ? dataPath.toLowerCase(Locale.US) : "";
+            String lowerDirData = extractParentDirLower(dataPath);
+
+            // Never trigger on received transfers (Quick Share, Nearby Share, Bluetooth), browser downloads,
+            // messaging/social apps, or editor/wallpaper directories—even if the received image is named Screenshot_*!
+            if (isExcludedNonScreenshotLocation(lowerPath, lowerBucket, lowerDirData)) continue;
+
+            // Skip obvious non-screenshot camera/messaging/downloaded filenames
+            if (lowerName.startsWith("received_") || lowerName.startsWith("fb_img_")
+                    || lowerName.startsWith("pxl_") || lowerName.startsWith("dsc")
+                    || lowerName.startsWith("mvimg_") || lowerName.contains("-wa0")) {
+                continue;
+            }
 
             long rawAdd = dateAddCol >= 0 ? cursor.getLong(dateAddCol) : 0L;
             long rawMod = dateModCol >= 0 ? cursor.getLong(dateModCol) : 0L;
-            long modSec = Math.max(normalizeTimestampSeconds(rawMod), normalizeTimestampSeconds(rawAdd));
+            long addedSec = normalizeTimestampSeconds(rawAdd);
+            long modSec = Math.max(normalizeTimestampSeconds(rawMod), addedSec);
             if (modSec <= 0L) modSec = nowSec;
+
+            // If DATE_ADDED is old (> 45s ago) and DATE_MODIFIED bumped (e.g. Gallery edit/restore), do not auto-open
+            if (addedSec > 0L && (nowSec - addedSec) > 45L && (modSec - addedSec) > 45L) {
+                continue;
+            }
 
             int imgW = wCol >= 0 ? cursor.getInt(wCol) : 0;
             int imgH = hCol >= 0 ? cursor.getInt(hCol) : 0;
 
-            boolean explicitScreenshotName = lowerName.contains("screenshot")
-                    || lowerName.contains("screencap")
-                    || lowerName.contains("screen_cap")
-                    || lowerName.contains("screen-")
-                    || lowerName.contains("captura")
-                    || lowerName.contains("schirmfoto")
-                    || lowerName.contains("tangkapan")
-                    || lowerName.contains("snimok");
-
-            boolean pathMatch = lowerPath.contains("screenshot")
-                    || lowerBucket.contains("screenshot")
-                    || lowerData.contains("screenshot")
-                    || lowerData.contains("screencap");
+            boolean explicitScreenshotName = hasScreenshotMarker(lowerName) || lowerName.contains("screen-");
+            boolean isScreenshotDir = hasScreenshotMarker(lowerPath)
+                    || hasScreenshotMarker(lowerBucket)
+                    || hasScreenshotMarker(lowerDirData);
 
             // Some OPPO / Realme ColorOS devices store "Screenshot_*.jpg" directly inside DCIM/Camera!
-            boolean isCameraDir = lowerPath.contains("dcim/camera") || lowerBucket.equals("camera") || lowerData.contains("/dcim/camera/");
-            boolean isRegularCameraPhoto = isCameraDir && !explicitScreenshotName;
-            if (isRegularCameraPhoto) continue;
+            boolean isCameraDir = lowerPath.contains("dcim/camera")
+                    || lowerBucket.equals("camera")
+                    || lowerDirData.contains("/dcim/camera/");
 
-            boolean dimensionMatch = false;
-            if ((nowSec - modSec) <= 14L && imgW > 0 && imgH > 0) {
-                for (int[] wh : displayDims) {
-                    int sw = wh[0];
-                    int sh = wh[1];
-                    if ((imgW == sw && imgH >= sh * 0.75f) || (imgW == sh && imgH == sw)) {
-                        dimensionMatch = true;
-                        break;
-                    }
-                }
+            if (!isScreenshotDir && !(isCameraDir && explicitScreenshotName)) {
+                continue;
             }
-
-            if (!explicitScreenshotName && !pathMatch && !dimensionMatch && !isDirectHintUri) continue;
 
             long id = idCol >= 0 ? cursor.getLong(idCol) : -1L;
             Uri contentUri = id >= 0
