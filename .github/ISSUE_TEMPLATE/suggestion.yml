@@ -1,0 +1,19 @@
+name: Suggestion / Device Feedback
+description: Share UI tweaks, usability ideas, or report how FoldShot runs on your phone
+title: "[Suggestion]: "
+labels: ["suggestion"]
+body:
+  - type: textarea
+    id: suggestion
+    attributes:
+      label: Your Suggestion or Feedback
+      description: Small UX improvements, wording tweaks, or compatibility feedback for your phone model.
+    validations:
+      required: true
+  - type: input
+    id: device
+    attributes:
+      label: Phone Model & Android Version (Optional)
+      placeholder: "Samsung / Xiaomi / Pixel / Android 15"
+    validations:
+      required: false

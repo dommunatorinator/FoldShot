@@ -1,0 +1,58 @@
+name: Bug Report
+description: Report a crash, overlay issue, folder problem, or device-specific bug
+title: "[Bug]: "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting a bug! Please confirm you ran all **System Integration** checks and took a couple of test screenshots after setup so FoldShot's screenshot integration could initialize properly.
+  - type: input
+    id: device
+    attributes:
+      label: Device Model
+      description: Example - Samsung Galaxy Z Fold 7, Pixel 9, Xiaomi 11T, Infinix Note 40 Pro
+      placeholder: "Galaxy Z Fold 7"
+    validations:
+      required: true
+  - type: input
+    id: android_version
+    attributes:
+      label: Android Version & OS Skin
+      description: Example - Android 15 (One UI 7), Android 14 (HyperOS)
+      placeholder: "Android 15 / One UI 7"
+    validations:
+      required: true
+  - type: input
+    id: app_version
+    attributes:
+      label: FoldShot Version
+      placeholder: "v2.2.1"
+    validations:
+      required: true
+  - type: checkboxes
+    id: setup_checks
+    attributes:
+      label: Setup Checklist
+      options:
+        - label: Completed all 4 rows under System Integration (Photo access set to Allow all, Auto-open, Silent delete & move, Background/Battery)
+          required: true
+        - label: Took 2-3 test screenshots to let the screenshot integration initialize
+          required: false
+  - type: textarea
+    id: description
+    attributes:
+      label: What happened?
+      description: Describe the bug clearly, including whether it happened on the cover screen, inner unfolded screen, or after folding/unfolding.
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to Reproduce
+      placeholder: |
+        1. Take screenshot on...
+        2. Tap...
+        3. See error...
+    validations:
+      required: false

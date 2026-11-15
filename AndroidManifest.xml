@@ -1,0 +1,90 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    package="com.foldshot.app"
+    android:versionCode="17"
+    android:versionName="2.2.1">
+
+    <uses-sdk
+        android:minSdkVersion="29"
+        android:targetSdkVersion="35" />
+
+    <!-- Minimum Offline Media & Overlay Permissions (Zero INTERNET, Zero Boot Persistence) -->
+    <uses-permission android:name="android.permission.READ_MEDIA_IMAGES" />
+    <uses-permission android:name="android.permission.READ_MEDIA_VISUAL_USER_SELECTED" />
+    <uses-permission
+        android:name="android.permission.READ_EXTERNAL_STORAGE"
+        android:maxSdkVersion="32" />
+    <!-- Official Android 12+ Scoped Media Management permission for silent screenshot delete/move -->
+    <uses-permission android:name="android.permission.MANAGE_MEDIA" />
+    <!-- Overlay permission to auto-open the Smart Capture bar over any app -->
+    <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
+
+    <application
+        android:allowBackup="false"
+        android:usesCleartextTraffic="false"
+        android:label="FoldShot"
+        android:icon="@mipmap/ic_foldshot"
+        android:supportsRtl="true"
+        android:resizeableActivity="true"
+        android:theme="@android:style/Theme.DeviceDefault.NoActionBar">
+
+        <property
+            android:name="android.window.PROPERTY_COMPAT_ALLOW_MIN_ASPECT_RATIO_OVERRIDE"
+            android:value="true" />
+
+        <!-- Utility Control Center -->
+        <activity
+            android:name=".MainActivity"
+            android:exported="true"
+            android:configChanges="screenSize|smallestScreenSize|screenLayout|orientation|density">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+
+        <!-- Translucent Screenshot Overlay Fallback Activity -->
+        <activity
+            android:name=".ScreenshotEditorActivity"
+            android:exported="false"
+            android:noHistory="true"
+            android:autoRemoveFromRecents="true"
+            android:launchMode="singleTop"
+            android:theme="@android:style/Theme.Translucent.NoTitleBar.Fullscreen"
+            android:configChanges="screenSize|smallestScreenSize|screenLayout|orientation|density" />
+
+        <!-- Background Screenshot Watcher & Overlay Utility Service -->
+        <service
+            android:name=".ScreenshotInterceptService"
+            android:enabled="true"
+            android:exported="false"
+            android:stopWithTask="false"
+            android:foregroundServiceType="specialUse">
+            <property
+                android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+                android:value="screenshot_observer_overlay" />
+        </service>
+
+        <!-- Universal Android Quick Settings Tile (1-tap resume or manual crop) -->
+        <service
+            android:name=".FoldShotTileService"
+            android:label="FoldShot Crop"
+            android:icon="@android:drawable/ic_menu_crop"
+            android:exported="true"
+            android:permission="android.permission.BIND_QUICK_SETTINGS_TILE">
+            <intent-filter>
+                <action android:name="android.service.quicksettings.action.QS_TILE" />
+            </intent-filter>
+        </service>
+
+        <provider
+            android:name=".ClipboardFileProvider"
+            android:authorities="com.foldshot.app.fileprovider"
+            android:exported="false"
+            android:grantUriPermissions="true" />
+
+    </application>
+</manifest>

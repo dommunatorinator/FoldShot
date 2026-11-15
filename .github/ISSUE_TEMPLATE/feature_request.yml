@@ -1,0 +1,26 @@
+name: Feature Request
+description: Request a new feature or workflow capability for FoldShot
+title: "[Request]: "
+labels: ["enhancement", "feature-request"]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: What problem would this solve?
+      description: Explain what currently slows down your screenshot workflow.
+    validations:
+      required: true
+  - type: textarea
+    id: solution
+    attributes:
+      label: What feature would you like?
+      description: Describe how you'd expect it to work in the overlay or Settings.
+    validations:
+      required: true
+  - type: input
+    id: device
+    attributes:
+      label: Device Model (Optional)
+      placeholder: "Galaxy Z Fold 7 / Pixel 9 / etc."
+    validations:
+      required: false

@@ -1,0 +1,257 @@
+name: Weekly Issue Digest & Automated Bug Triage
+
+on:
+  schedule:
+    - cron: "0 9 * * 1" # Every Monday at 09:00 UTC
+  workflow_dispatch:
+
+permissions:
+  issues: write
+  contents: read
+
+jobs:
+  weekly-triage-and-digest:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Handle Bug Reports & Compile Weekly Digest
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const { owner, repo } = context.repo;
+            const now = new Date();
+            const sevenDaysAgo = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
+            const twentyOneDaysAgo = new Date(now.getTime() - 21 * 24 * 60 * 60 * 1000);
+
+            const ensureLabels = [
+              { name: "bug", color: "d73a4a", description: "Something isn't working" },
+              { name: "enhancement", color: "a2eeef", description: "New feature or improvement" },
+              { name: "feature-request", color: "1d76db", description: "User-requested feature" },
+              { name: "suggestion", color: "0e8a16", description: "Idea or UX suggestion" },
+              { name: "priority: high", color: "b60205", description: "Crash, data loss, or core breakage" },
+              { name: "priority: medium", color: "fbca04", description: "Standard bug report" },
+              { name: "triage: needs-info", color: "d4c5f9", description: "Waiting for setup checklist / repro details" },
+              { name: "triage: ready-for-fix", color: "0075ca", description: "Repro details provided; ready to investigate" },
+              { name: "triage: auto-responded", color: "ededed", description: "Weekly triage bot already posted checklist" },
+              { name: "stale", color: "cccccc", description: "No reporter reply within 21 days" },
+              { name: "weekly-digest", color: "5319e7", description: "Automated weekly summary of bugs, requests & suggestions" }
+            ];
+
+            for (const lbl of ensureLabels) {
+              try {
+                await github.rest.issues.createLabel({ owner, repo, ...lbl });
+              } catch (e) {
+                // Label already exists
+              }
+            }
+
+            const allIssues = await github.paginate(github.rest.issues.listForRepo, {
+              owner,
+              repo,
+              state: "open",
+              per_page: 100
+            });
+
+            const pureIssues = allIssues.filter(i => !i.pull_request);
+            const triageActions = [];
+
+            // 1. Automatically classify & handle open Bug Reports every week
+            for (const issue of pureIssues) {
+              const labelNames = issue.labels.map(l => l.name);
+              if (labelNames.includes("weekly-digest")) continue;
+
+              const text = `${issue.title}\n${issue.body || ""}`.toLowerCase();
+
+              // Auto-classify untriaged blank issues
+              const hasCategory = labelNames.some(l =>
+                ["bug", "enhancement", "feature-request", "suggestion"].includes(l)
+              );
+              if (!hasCategory) {
+                if (/\b(crash|bug|error|broken|freeze|doesn'?t work|not working|fail|permission|overlay)\b/.test(text)) {
+                  await github.rest.issues.addLabels({ owner, repo, issue_number: issue.number, labels: ["bug"] });
+                  labelNames.push("bug");
+                  triageActions.push(`Labeled #${issue.number} as \`bug\``);
+                } else if (/\b(feature|request|add support|please add)\b/.test(text)) {
+                  await github.rest.issues.addLabels({ owner, repo, issue_number: issue.number, labels: ["enhancement", "feature-request"] });
+                  labelNames.push("enhancement", "feature-request");
+                } else if (/\b(suggest|suggestion|idea|ux|ui|improve)\b/.test(text)) {
+                  await github.rest.issues.addLabels({ owner, repo, issue_number: issue.number, labels: ["suggestion"] });
+                  labelNames.push("suggestion");
+                }
+              }
+
+              if (!labelNames.includes("bug")) continue;
+
+              // Priority assignment
+              const isHighPriority =
+                /\b(crash|force close|fc|freeze|black screen|delete failed|data loss|unusable|won'?t open)\b/.test(text) ||
+                (issue.reactions && (issue.reactions["+1"] || 0) >= 3) ||
+                issue.comments >= 4;
+
+              const targetPriority = isHighPriority ? "priority: high" : "priority: medium";
+              const oppositePriority = isHighPriority ? "priority: medium" : "priority: high";
+              if (labelNames.includes(oppositePriority)) {
+                try {
+                  await github.rest.issues.removeLabel({ owner, repo, issue_number: issue.number, name: oppositePriority });
+                } catch (e) {}
+              }
+              if (!labelNames.includes(targetPriority)) {
+                await github.rest.issues.addLabels({ owner, repo, issue_number: issue.number, labels: [targetPriority] });
+                triageActions.push(`Set \`${targetPriority}\` on #${issue.number}`);
+              }
+
+              // Check comments to determine author reply or stale status
+              const comments = await github.paginate(github.rest.issues.listComments, {
+                owner,
+                repo,
+                issue_number: issue.number,
+                per_page: 100
+              });
+
+              const updatedAt = new Date(issue.updated_at);
+              const lastBotComment = [...comments].reverse().find(c =>
+                (c.body || "").includes("<!-- foldshot-auto-triage -->")
+              );
+
+              if (!labelNames.includes("triage: auto-responded")) {
+                await github.rest.issues.createComment({
+                  owner,
+                  repo,
+                  issue_number: issue.number,
+                  body: [
+                    "<!-- foldshot-auto-triage -->",
+                    "Thanks for reporting this! While this gets queued into the weekly review:",
+                    "",
+                    "1. Open **FoldShot Settings -> System Integration** and make sure **all 4 checks** are active (`Photo & screenshot access -> Allow all`, `Auto-open on screenshot`, `Silent delete & move`, and unrestricted background/battery).",
+                    "2. Give the **screenshot integration** a brief moment after granting permissions, then take **2–3 quick test screenshots** (or tap **Preview Full-Height Overlay**).",
+                    "3. If the issue persists, please reply with your **phone model**, **Android version**, **FoldShot version**, and whether it happens on the cover or unfolded screen so this moves to `triage: ready-for-fix`."
+                  ].join("\n")
+                });
+                await github.rest.issues.addLabels({
+                  owner,
+                  repo,
+                  issue_number: issue.number,
+                  labels: ["triage: needs-info", "triage: auto-responded"]
+                });
+                triageActions.push(`Posted setup checklist & tagged #${issue.number} \`triage: needs-info\``);
+              } else if (labelNames.includes("triage: needs-info")) {
+                const authorRepliedAfterBot = lastBotComment && comments.some(c =>
+                  c.user && c.user.login === issue.user.login &&
+                  new Date(c.created_at) > new Date(lastBotComment.created_at)
+                );
+
+                if (authorRepliedAfterBot) {
+                  try {
+                    await github.rest.issues.removeLabel({ owner, repo, issue_number: issue.number, name: "triage: needs-info" });
+                  } catch (e) {}
+                  if (!labelNames.includes("triage: ready-for-fix")) {
+                    await github.rest.issues.addLabels({
+                      owner,
+                      repo,
+                      issue_number: issue.number,
+                      labels: ["triage: ready-for-fix"]
+                    });
+                  }
+                  triageActions.push(`Promoted #${issue.number} to \`triage: ready-for-fix\` after author reply`);
+                } else if (updatedAt < twentyOneDaysAgo) {
+                  await github.rest.issues.createComment({
+                    owner,
+                    repo,
+                    issue_number: issue.number,
+                    body: "Closing this automatically during the weekly sweep because there has been no reply for 21+ days. Feel free to reopen with updated device details anytime!"
+                  });
+                  await github.rest.issues.addLabels({
+                    owner,
+                    repo,
+                    issue_number: issue.number,
+                    labels: ["stale"]
+                  });
+                  await github.rest.issues.update({
+                    owner,
+                    repo,
+                    issue_number: issue.number,
+                    state: "closed",
+                    state_reason: "not_planned"
+                  });
+                  triageActions.push(`Auto-closed stale #${issue.number} after 21+ days`);
+                }
+              }
+            }
+
+            // 2. Compile Weekly Digest of Bug Reports, Feature Requests & Suggestions
+            const refreshedIssues = (await github.paginate(github.rest.issues.listForRepo, {
+              owner,
+              repo,
+              state: "open",
+              per_page: 100
+            })).filter(i => !i.pull_request && !i.labels.some(l => l.name === "weekly-digest"));
+
+            const bugs = [];
+            const requests = [];
+            const suggestions = [];
+            const other = [];
+
+            for (const i of refreshedIssues) {
+              const names = i.labels.map(l => l.name);
+              if (names.includes("bug")) bugs.push(i);
+              else if (names.includes("feature-request") || names.includes("enhancement")) requests.push(i);
+              else if (names.includes("suggestion")) suggestions.push(i);
+              else other.push(i);
+            }
+
+            const formatList = (items) => {
+              if (!items.length) return "_None open right now._";
+              return items.map(i => {
+                const isNew = new Date(i.created_at) >= sevenDaysAgo ? " 🆕" : "";
+                const labels = i.labels.map(l => `\`${l.name}\``).join(" ");
+                return `- #${i.number}${isNew} **${i.title}** (${labels}) — by @${i.user.login}`;
+              }).join("\n");
+            };
+
+            const dateStr = now.toISOString().slice(0, 10);
+            const digestBody = [
+              `## 📊 FoldShot Weekly Report (${dateStr})`,
+              "",
+              `- **Open Bug Reports:** ${bugs.length} (${bugs.filter(b => new Date(b.created_at) >= sevenDaysAgo).length} new this week)`,
+              `- **Open Feature Requests:** ${requests.length} (${requests.filter(r => new Date(r.created_at) >= sevenDaysAgo).length} new this week)`,
+              `- **Open Suggestions:** ${suggestions.length} (${suggestions.filter(s => new Date(s.created_at) >= sevenDaysAgo).length} new this week)`,
+              `- **Other Open Issues:** ${other.length}`,
+              "",
+              "### 🐞 Bug Reports (Auto-Triaged Weekly)",
+              formatList(bugs),
+              "",
+              "### ✨ Feature Requests",
+              formatList(requests),
+              "",
+              "### 💡 Suggestions & Device Feedback",
+              formatList(suggestions),
+              "",
+              ...(other.length ? ["### 📬 Other Open Issues", formatList(other), ""] : []),
+              "### 🤖 Automated Weekly Bug Handling Actions",
+              triageActions.length ? triageActions.map(a => `- ${a}`).join("\n") : "- No automated bug triage actions needed this week."
+            ].join("\n");
+
+            // Close any previous open weekly-digest issues so only the newest digest stays open
+            const prevDigests = (await github.paginate(github.rest.issues.listForRepo, {
+              owner,
+              repo,
+              state: "open",
+              labels: "weekly-digest",
+              per_page: 50
+            })).filter(i => !i.pull_request);
+
+            for (const old of prevDigests) {
+              await github.rest.issues.update({
+                owner,
+                repo,
+                issue_number: old.number,
+                state: "closed"
+              });
+            }
+
+            await github.rest.issues.create({
+              owner,
+              repo,
+              title: `Weekly Digest: Bugs, Requests & Suggestions (${dateStr})`,
+              body: digestBody,
+              labels: ["weekly-digest"]
+            });

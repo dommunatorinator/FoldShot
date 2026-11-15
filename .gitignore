@@ -1,0 +1,20 @@
+# Compiled binaries & signing artifacts (distributed via GitHub Releases)
+*.apk
+*.idsig
+*.aab
+*.dex
+*.ap_
+
+# Keystores & local SDK caches (never commit signing keys)
+*.keystore
+*.jks
+.build/
+.android-sdk/
+local.properties
+
+# Python / OS / Editor caches
+__pycache__/
+*.pyc
+.DS_Store
+.idea/
+*.iml
