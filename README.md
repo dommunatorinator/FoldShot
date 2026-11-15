@@ -3,7 +3,7 @@
 **Stop letting your Screenshots and Downloads folders become a graveyard.**  
 Instant **1-tap folder sorting** + **iOS-style Copy & Delete** + **Save Cropped Screenshot** + **inline Redact & Highlight markup** + **AES-256 encrypted Hidden Vault** + **thumb-reachable full-resolution cropping** right when you capture a screenshot (or optionally when you save images from **Messenger** or **Chrome/Browser**)—100% offline, **~225 KB**, release-signed, with a built-in **Settings Profile & Encrypted Vault backup/restore**, **hideable tray notification**, and live adaptation across both screens on foldables.
 
-[▶️ **Watch the 30-Second Demo**](https://drive.google.com/file/d/10zp5OYTAV0vMAbJnqnfiXAlXtnpYkRpP/view) · [⬇️ **Download Latest APK (v2.2.1)**](https://github.com/dommunatorinator/FoldShot/releases/latest/download/FoldShot.apk) · [☕ **Ko-fi**](https://ko-fi.com/dommu) · [💖 **PayPal**](https://www.paypal.me/dommuyu)
+[▶️ **Watch the 90-Second Demo**](https://drive.google.com/file/d/10zp5OYTAV0vMAbJnqnfiXAlXtnpYkRpP/view) · [⬇️ **Download Latest APK (v2.2.1)**](https://github.com/dommunatorinator/FoldShot/releases/latest/download/FoldShot.apk) · [☕ **Ko-fi**](https://ko-fi.com/dommu) · [💖 **PayPal**](https://www.paypal.me/dommuyu)
 
 > [!NOTE]
 > **No pressure to update:** If FoldShot already works well for you, **you don't have to update if you don't want to.** Only grab a newer build if you want a new feature or fix—and if something *doesn't* work on your phone, open an issue with your device model and Android version and **I'll update it when I can.**
