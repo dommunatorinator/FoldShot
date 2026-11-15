@@ -415,6 +415,21 @@ def test_security_and_universal_oem_features():
         "Privacy overlay (FLAG_SECURE), dynamic screen-lock auto-hide, and MainActivity Privacy controls wired cleanly"
     )
 
+    # 5m. DCIM Folder Routing & Non-Duplicating Move/Delete
+    assert_true(
+        "Environment.DIRECTORY_DCIM + \"/\"" in helper_src
+        and "folderIsDcim" in helper_src
+        and "\"DCIM/FoldShot Vault/\"" in vault_mgr_src,
+        "Favorite folders & Vault restores route and create inside DCIM/ instead of Pictures/"
+    )
+    assert_true(
+        "resolveContentUriForSource" in helper_src
+        and "deleteContentUriWithPromptFallback" in helper_src
+        and "EXTRA_DELETE_ONLY_URI" in editor_src
+        and "launchDeletePrompt" in editor_src,
+        "Folder move & Copy & Delete resolve file:// URIs and prompt fallback cleanly without leaving duplicates in DCIM/Screenshots"
+    )
+
     # 6. Expandable "More Folders" button on left of the 3 favorite folders (v2.1.0)
     assert_true("expandFoldersBtnRect" in view_src, "Small expand button rect declared on left of the 3 folders")
     assert_true("showMoreFoldersDrawer" in view_src, "In-overlay expanded folder selection drawer state implemented")

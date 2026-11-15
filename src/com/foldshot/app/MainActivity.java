@@ -1459,6 +1459,7 @@ public class MainActivity extends Activity {
 
         new AlertDialog.Builder(this, android.R.style.Theme_DeviceDefault_Dialog_Alert)
                 .setTitle("Add Allowed Folder")
+                .setMessage("New folders are created inside DCIM/<Folder Name>/")
                 .setView(wrap)
                 .setPositiveButton("Add", (d, w) -> {
                     String name = input.getText().toString().trim();

@@ -278,7 +278,7 @@ public class HiddenVaultActivity extends Activity {
             boolean ok = HiddenVaultManager.restoreToGallery(getApplicationContext(), item);
             runOnUiThread(() -> Toast.makeText(
                     this,
-                    ok ? "Restored to Pictures/FoldShot Vault/" : "Restore failed",
+                    ok ? "Restored to DCIM/FoldShot Vault/" : "Restore failed",
                     Toast.LENGTH_SHORT
             ).show());
         }));

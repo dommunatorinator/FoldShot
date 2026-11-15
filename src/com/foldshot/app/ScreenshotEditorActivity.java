@@ -17,6 +17,18 @@ import android.widget.Toast;
 public class ScreenshotEditorActivity extends Activity implements OneUiSmartCaptureView.Listener {
 
     public static final String EXTRA_SCREENSHOT_URI = "extra_screenshot_uri";
+    public static final String EXTRA_DELETE_ONLY_URI = "extra_delete_only_uri";
+
+    public static void launchDeletePrompt(android.content.Context context, Uri targetUri) {
+        if (context == null || targetUri == null || Uri.EMPTY.equals(targetUri)) return;
+        try {
+            Intent intent = new Intent(context, ScreenshotEditorActivity.class);
+            intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_CLEAR_TOP | Intent.FLAG_ACTIVITY_SINGLE_TOP);
+            intent.putExtra(EXTRA_DELETE_ONLY_URI, targetUri.toString());
+            context.startActivity(intent);
+        } catch (Exception ignored) {
+        }
+    }
 
     private FoldShotPrefs prefs;
     private OneUiSmartCaptureView captureView;
@@ -55,6 +67,21 @@ public class ScreenshotEditorActivity extends Activity implements OneUiSmartCapt
 
     private void handleIntent(Intent intent) {
         if (intent == null) return;
+        String deleteOnlyRaw = intent.getStringExtra(EXTRA_DELETE_ONLY_URI);
+        if (deleteOnlyRaw != null && !deleteOnlyRaw.isEmpty()) {
+            if (captureView != null) {
+                captureView.setVisibility(android.view.View.GONE);
+            }
+            Uri target = Uri.parse(deleteOnlyRaw);
+            boolean deleted = MediaStoreHelper.deleteScreenshotSilently(this, this, target);
+            if (deleted) {
+                finishAndRemoveTask();
+            }
+            return;
+        }
+        if (captureView != null) {
+            captureView.setVisibility(android.view.View.VISIBLE);
+        }
         String rawUri = intent.getStringExtra(EXTRA_SCREENSHOT_URI);
         if (rawUri != null) {
             screenshotUri = Uri.parse(rawUri);
@@ -175,8 +202,11 @@ public class ScreenshotEditorActivity extends Activity implements OneUiSmartCapt
     @Override
     protected void onActivityResult(int requestCode, int resultCode, Intent data) {
         super.onActivityResult(requestCode, resultCode, data);
-        if (requestCode == MediaStoreHelper.REQ_DELETE_SCREENSHOT && resultCode == Activity.RESULT_OK) {
-            finishAndRemoveTask();
+        if (requestCode == MediaStoreHelper.REQ_DELETE_SCREENSHOT) {
+            if (resultCode == Activity.RESULT_OK
+                    || (getIntent() != null && getIntent().hasExtra(EXTRA_DELETE_ONLY_URI))) {
+                finishAndRemoveTask();
+            }
         }
     }
 }

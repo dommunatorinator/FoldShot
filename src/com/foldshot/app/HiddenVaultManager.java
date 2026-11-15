@@ -401,7 +401,7 @@ public class HiddenVaultManager {
             ContentValues values = new ContentValues();
             values.put(MediaStore.Images.Media.DISPLAY_NAME, baseName + item.ext);
             values.put(MediaStore.Images.Media.MIME_TYPE, item.mimeType);
-            values.put(MediaStore.Images.Media.RELATIVE_PATH, "Pictures/FoldShot Vault/");
+            values.put(MediaStore.Images.Media.RELATIVE_PATH, "DCIM/FoldShot Vault/");
             values.put(MediaStore.Images.Media.IS_PENDING, 1);
 
             inserted = resolver.insert(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, values);

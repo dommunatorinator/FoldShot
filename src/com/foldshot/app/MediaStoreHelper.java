@@ -25,6 +25,7 @@ import android.graphics.Rect;
 import android.graphics.RectF;
 import android.hardware.display.DisplayManager;
 import android.media.ExifInterface;
+import android.media.MediaScannerConnection;
 import android.net.Uri;
 import android.os.Build;
 import android.os.Environment;
@@ -504,14 +505,21 @@ public class MediaStoreHelper {
                     if (lower.equals("screenshots") || lower.equals("screenshot") || lower.equals("camera") || lower.startsWith(".")) continue;
 
                     String key = bucket.trim();
+                    String folder = (relPath != null && !relPath.isEmpty())
+                            ? normalizeRelPath(relPath)
+                            : ("DCIM/" + key + "/");
                     GalleryAlbumInfo existing = map.get(key);
                     if (existing == null) {
-                        String folder = (relPath != null && !relPath.isEmpty())
-                                ? relPath
-                                : ("Pictures/" + key + "/");
                         map.put(key, new GalleryAlbumInfo(key, folder, 1));
                     } else {
                         existing.itemCount++;
+                        boolean existingIsDcim = existing.relativePath != null
+                                && existing.relativePath.toLowerCase(Locale.US).startsWith("dcim/");
+                        boolean folderIsDcim = folder.toLowerCase(Locale.US).startsWith("dcim/");
+                        if (!existingIsDcim && folderIsDcim) {
+                            int count = existing.itemCount;
+                            map.put(key, new GalleryAlbumInfo(key, folder, count));
+                        }
                     }
                 }
             }
@@ -674,8 +682,10 @@ public class MediaStoreHelper {
                 BitmapFactory.Options opts = new BitmapFactory.Options();
                 opts.inJustDecodeBounds = true;
                 BitmapFactory.decodeFile(newestFile.getAbsolutePath(), opts);
+                Uri rawUri = Uri.fromFile(newestFile);
+                Uri resolved = resolveContentUriForSource(context, rawUri);
                 return new ScreenshotData(
-                        Uri.fromFile(newestFile),
+                        resolved != null ? resolved : rawUri,
                         newestFile.getAbsolutePath(),
                         newestFile.getName(),
                         modSec,
@@ -1500,19 +1510,160 @@ public class MediaStoreHelper {
         return removed;
     }
 
-    public static boolean deleteScreenshotSilently(Context context, Activity optionalActivity, Uri sourceUri) {
-        if (sourceUri == null || Uri.EMPTY.equals(sourceUri)) return true;
-        if ("file".equalsIgnoreCase(sourceUri.getScheme()) && sourceUri.getPath() != null) {
-            try {
-                File f = new File(sourceUri.getPath());
-                if (f.exists() && f.delete()) return true;
+    private static String sanitizeAlbumName(String albumName) {
+        if (albumName == null) return "Saved";
+        String clean = albumName.trim().replace('\\', '/');
+        while (clean.startsWith("/")) clean = clean.substring(1);
+        while (clean.endsWith("/")) clean = clean.substring(0, clean.length() - 1);
+        int slash = clean.lastIndexOf('/');
+        if (slash >= 0 && slash < clean.length() - 1) {
+            clean = clean.substring(slash + 1);
+        }
+        clean = clean.trim();
+        return clean.isEmpty() ? "Saved" : clean;
+    }
+
+    private static String normalizeRelPath(String relPath) {
+        if (relPath == null) return "";
+        String clean = relPath.trim();
+        if (!clean.isEmpty() && !clean.endsWith("/")) {
+            clean = clean + "/";
+        }
+        return clean;
+    }
+
+    @SuppressWarnings("deprecation")
+    public static Uri resolveContentUriForSource(Context context, Uri sourceUri) {
+        if (sourceUri == null || Uri.EMPTY.equals(sourceUri)) return sourceUri;
+        if ("content".equalsIgnoreCase(sourceUri.getScheme())) {
+            return sourceUri;
+        }
+        if ("file".equalsIgnoreCase(sourceUri.getScheme()) && sourceUri.getPath() != null && context != null) {
+            String path = sourceUri.getPath();
+            File f = new File(path);
+            String fileName = f.getName();
+            String parentName = f.getParentFile() != null ? f.getParentFile().getName().toLowerCase(Locale.US) : "";
+            ContentResolver resolver = context.getContentResolver();
+            String[] proj = new String[]{
+                    MediaStore.Images.Media._ID,
+                    MediaStore.Images.Media.DATA,
+                    MediaStore.Images.Media.RELATIVE_PATH
+            };
+            try (Cursor c = resolver.query(
+                    MediaStore.Images.Media.EXTERNAL_CONTENT_URI,
+                    proj,
+                    MediaStore.Images.Media.DATA + "=?",
+                    new String[]{path},
+                    MediaStore.Images.Media._ID + " DESC"
+            )) {
+                if (c != null && c.moveToFirst()) {
+                    long id = c.getLong(c.getColumnIndexOrThrow(MediaStore.Images.Media._ID));
+                    return ContentUris.withAppendedId(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, id);
+                }
             } catch (Exception ignored) {
             }
+
+            if (fileName != null && !fileName.isEmpty()) {
+                try (Cursor c = resolver.query(
+                        MediaStore.Images.Media.EXTERNAL_CONTENT_URI,
+                        proj,
+                        MediaStore.Images.Media.DISPLAY_NAME + "=?",
+                        new String[]{fileName},
+                        MediaStore.Images.Media.DATE_MODIFIED + " DESC, " + MediaStore.Images.Media._ID + " DESC"
+                )) {
+                    if (c != null) {
+                        int idCol = c.getColumnIndex(MediaStore.Images.Media._ID);
+                        int dataCol = c.getColumnIndex(MediaStore.Images.Media.DATA);
+                        int relCol = c.getColumnIndex(MediaStore.Images.Media.RELATIVE_PATH);
+                        Uri firstMatch = null;
+                        while (c.moveToNext()) {
+                            long id = idCol >= 0 ? c.getLong(idCol) : -1L;
+                            if (id < 0) continue;
+                            Uri candidate = ContentUris.withAppendedId(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, id);
+                            if (firstMatch == null) firstMatch = candidate;
+                            String rowData = dataCol >= 0 ? c.getString(dataCol) : null;
+                            String rowRel = relCol >= 0 ? c.getString(relCol) : null;
+                            if (parentName.isEmpty()
+                                    || (rowData != null && rowData.toLowerCase(Locale.US).contains("/" + parentName + "/"))
+                                    || (rowRel != null && rowRel.toLowerCase(Locale.US).contains(parentName))) {
+                                return candidate;
+                            }
+                        }
+                        if (firstMatch != null) return firstMatch;
+                    }
+                } catch (Exception ignored) {
+                }
+            }
         }
+        return sourceUri;
+    }
+
+    private static boolean folderContainsFoldShotFiles(Context context, String relPath) {
+        if (context == null || relPath == null || relPath.isEmpty()) return false;
+        ContentResolver resolver = context.getContentResolver();
+        try (Cursor c = resolver.query(
+                MediaStore.Images.Media.EXTERNAL_CONTENT_URI,
+                new String[]{MediaStore.Images.Media.DISPLAY_NAME, MediaStore.Images.Media.RELATIVE_PATH},
+                MediaStore.Images.Media.RELATIVE_PATH + "=?",
+                new String[]{relPath},
+                null
+        )) {
+            if (c != null) {
+                int nameCol = c.getColumnIndex(MediaStore.Images.Media.DISPLAY_NAME);
+                while (c.moveToNext()) {
+                    String name = nameCol >= 0 ? c.getString(nameCol) : null;
+                    if (name != null && (name.startsWith("FoldShot_") || isOwnSavedOutput(null, name))) {
+                        return true;
+                    }
+                }
+            }
+        } catch (Exception ignored) {
+        }
+        return false;
+    }
+
+    public static boolean deleteScreenshotSilently(Context context, Activity optionalActivity, Uri sourceUri) {
+        if (sourceUri == null || Uri.EMPTY.equals(sourceUri) || context == null) return true;
+
+        Uri resolvedUri = resolveContentUriForSource(context, sourceUri);
+
+        if ("file".equalsIgnoreCase(resolvedUri.getScheme()) && resolvedUri.getPath() != null) {
+            final String filePath = resolvedUri.getPath();
+            try {
+                File f = new File(filePath);
+                if (!f.exists() || f.delete()) {
+                    return true;
+                }
+            } catch (Exception ignored) {
+            }
+
+            final Context appCtx = context.getApplicationContext();
+            try {
+                MediaScannerConnection.scanFile(
+                        appCtx,
+                        new String[]{filePath},
+                        null,
+                        (scannedPath, scannedUri) -> {
+                            if (scannedUri != null) {
+                                CLIP_CLEAR_HANDLER.post(() -> deleteContentUriWithPromptFallback(appCtx, null, scannedUri));
+                            }
+                        }
+                );
+            } catch (Exception ignored) {
+            }
+            return false;
+        }
+
+        return deleteContentUriWithPromptFallback(context, optionalActivity, resolvedUri);
+    }
+
+    private static boolean deleteContentUriWithPromptFallback(Context context, Activity optionalActivity, Uri contentUri) {
+        if (contentUri == null || Uri.EMPTY.equals(contentUri)) return true;
+        if (!"content".equalsIgnoreCase(contentUri.getScheme())) return false;
         ContentResolver resolver = context.getContentResolver();
 
         try {
-            int deleted = resolver.delete(sourceUri, null, null);
+            int deleted = resolver.delete(contentUri, null, null);
             if (deleted > 0) return true;
         } catch (SecurityException secEx) {
             if (Build.VERSION.SDK_INT == 29 && secEx instanceof RecoverableSecurityException && optionalActivity != null) {
@@ -1527,34 +1678,52 @@ public class MediaStoreHelper {
                 } catch (IntentSender.SendIntentException ignored) {
                 }
             }
+        } catch (IllegalArgumentException ignored) {
+            return true;
+        } catch (Exception ignored) {
         }
 
-        if (Build.VERSION.SDK_INT >= 30 && optionalActivity != null) {
-            try {
-                PendingIntent pi = MediaStore.createDeleteRequest(resolver, Collections.singletonList(sourceUri));
-                optionalActivity.startIntentSenderForResult(
-                        pi.getIntentSender(),
-                        REQ_DELETE_SCREENSHOT,
-                        null, 0, 0, 0
-                );
+        if (Build.VERSION.SDK_INT >= 30) {
+            if (optionalActivity != null) {
+                try {
+                    PendingIntent pi = MediaStore.createDeleteRequest(resolver, Collections.singletonList(contentUri));
+                    optionalActivity.startIntentSenderForResult(
+                            pi.getIntentSender(),
+                            REQ_DELETE_SCREENSHOT,
+                            null, 0, 0, 0
+                    );
+                    return false;
+                } catch (IntentSender.SendIntentException ignored) {
+                }
+            } else {
+                ScreenshotEditorActivity.launchDeletePrompt(context, contentUri);
                 return false;
-            } catch (IntentSender.SendIntentException ignored) {
             }
+        } else if (Build.VERSION.SDK_INT == 29 && optionalActivity == null) {
+            ScreenshotEditorActivity.launchDeletePrompt(context, contentUri);
         }
         return false;
     }
 
-    private static String resolveRelativePathForAlbum(Context context, String albumName) {
-        String clean = albumName != null ? albumName.trim() : "Saved";
+    public static String resolveRelativePathForAlbum(Context context, String albumName) {
+        String clean = sanitizeAlbumName(albumName);
+        String dcimDefault = Environment.DIRECTORY_DCIM + "/" + clean + "/";
         List<GalleryAlbumInfo> existing = queryDeviceGalleryAlbums(context);
+        String nonDcimCandidate = null;
         for (GalleryAlbumInfo info : existing) {
-            if (info.bucketName.equalsIgnoreCase(clean) && info.relativePath != null && !info.relativePath.isEmpty()) {
-                String p = info.relativePath;
-                if (!p.endsWith("/")) p = p + "/";
+            if (info.bucketName == null || !info.bucketName.equalsIgnoreCase(clean)) continue;
+            String p = normalizeRelPath(info.relativePath);
+            if (p.isEmpty()) continue;
+            if (p.toLowerCase(Locale.US).startsWith("dcim/")) {
                 return p;
             }
+            if (!p.equalsIgnoreCase("Pictures/" + clean + "/")) {
+                if (nonDcimCandidate == null) nonDcimCandidate = p;
+            } else if (info.itemCount > 15 && !folderContainsFoldShotFiles(context, p)) {
+                if (nonDcimCandidate == null) nonDcimCandidate = p;
+            }
         }
-        return "Pictures/" + clean + "/";
+        return nonDcimCandidate != null ? nonDcimCandidate : dcimDefault;
     }
 
     public static String[] detectSourceMimeAndExt(Context context, Uri sourceUri) {
@@ -1708,28 +1877,30 @@ public class MediaStoreHelper {
     public static boolean moveBitmapToFavoriteAlbum(Context context, Activity optionalActivity, Uri sourceUri, Bitmap cropped, String albumName, boolean isFullCrop) {
         ContentResolver resolver = context.getContentResolver();
         FoldShotPrefs prefs = new FoldShotPrefs(context);
+        Uri resolvedSource = resolveContentUriForSource(context, sourceUri);
         String relFolder = resolveRelativePathForAlbum(context, albumName);
         String baseName = buildOutputBaseName(prefs, "FoldShot");
 
-        if (isFullCrop && sourceUri != null && !Uri.EMPTY.equals(sourceUri)) {
+        if (isFullCrop && resolvedSource != null && !Uri.EMPTY.equals(resolvedSource)) {
             boolean needRewriteForPrivacy = prefs.isAnonymousFilenameEnabled()
-                    || (prefs.isStripMetadataEnabled() && ".jpg".equalsIgnoreCase(detectSourceMimeAndExt(context, sourceUri)[1]));
-            if (!needRewriteForPrivacy && "content".equalsIgnoreCase(sourceUri.getScheme())) {
+                    || (prefs.isStripMetadataEnabled() && ".jpg".equalsIgnoreCase(detectSourceMimeAndExt(context, resolvedSource)[1]));
+            if (!needRewriteForPrivacy && "content".equalsIgnoreCase(resolvedSource.getScheme())) {
                 try {
                     ContentValues moveVals = new ContentValues();
                     moveVals.put(MediaStore.MediaColumns.RELATIVE_PATH, relFolder);
-                    if (resolver.update(sourceUri, moveVals, null, null) > 0) {
+                    if (resolver.update(resolvedSource, moveVals, null, null) > 0) {
+                        recordOwnSavedOutput(resolvedSource, null);
                         return true;
                     }
                 } catch (Exception ignored) {
                 }
             }
-            if (copyOriginalStreamToMediaStore(context, sourceUri, relFolder, baseName)) {
-                deleteScreenshotSilently(context, optionalActivity, sourceUri);
+            if (copyOriginalStreamToMediaStore(context, resolvedSource, relFolder, baseName)) {
+                deleteScreenshotSilently(context, optionalActivity, resolvedSource);
                 return true;
             }
             if (cropped == null) {
-                cropped = loadFullResolutionBitmap(context, sourceUri);
+                cropped = loadFullResolutionBitmap(context, resolvedSource);
             }
         }
 
@@ -1755,8 +1926,8 @@ public class MediaStoreHelper {
             done.put(MediaStore.Images.Media.IS_PENDING, 0);
             resolver.update(inserted, done, null, null);
 
-            if (sourceUri != null && !Uri.EMPTY.equals(sourceUri)) {
-                deleteScreenshotSilently(context, optionalActivity, sourceUri);
+            if (resolvedSource != null && !Uri.EMPTY.equals(resolvedSource)) {
+                deleteScreenshotSilently(context, optionalActivity, resolvedSource);
             }
             return true;
         } catch (Exception e) {
@@ -1798,15 +1969,16 @@ public class MediaStoreHelper {
     public static boolean saveCroppedScreenshot(Context context, Activity optionalActivity, Uri sourceUri, Bitmap cropped, boolean isFullCrop) {
         ContentResolver resolver = context.getContentResolver();
         FoldShotPrefs prefs = new FoldShotPrefs(context);
-        String relFolder = resolveScreenshotRelativePath(context, sourceUri);
+        Uri resolvedSource = resolveContentUriForSource(context, sourceUri);
+        String relFolder = resolveScreenshotRelativePath(context, resolvedSource);
         String baseName = buildOutputBaseName(prefs, "FoldShot_Screenshot");
 
-        if (isFullCrop && sourceUri != null && !Uri.EMPTY.equals(sourceUri)) {
+        if (isFullCrop && resolvedSource != null && !Uri.EMPTY.equals(resolvedSource)) {
             boolean needRewriteForPrivacy = prefs.isAnonymousFilenameEnabled()
-                    || (prefs.isStripMetadataEnabled() && ".jpg".equalsIgnoreCase(detectSourceMimeAndExt(context, sourceUri)[1]));
+                    || (prefs.isStripMetadataEnabled() && ".jpg".equalsIgnoreCase(detectSourceMimeAndExt(context, resolvedSource)[1]));
             boolean alreadyInScreenshots = false;
-            if ("content".equalsIgnoreCase(sourceUri.getScheme())) {
-                try (Cursor c = resolver.query(sourceUri, new String[]{MediaStore.Images.Media.RELATIVE_PATH}, null, null, null)) {
+            if ("content".equalsIgnoreCase(resolvedSource.getScheme())) {
+                try (Cursor c = resolver.query(resolvedSource, new String[]{MediaStore.Images.Media.RELATIVE_PATH}, null, null, null)) {
                     if (c != null && c.moveToFirst()) {
                         int idx = c.getColumnIndex(MediaStore.Images.Media.RELATIVE_PATH);
                         if (idx >= 0) {
@@ -1820,22 +1992,23 @@ public class MediaStoreHelper {
             if (alreadyInScreenshots && !needRewriteForPrivacy) {
                 return true;
             }
-            if (!alreadyInScreenshots && !needRewriteForPrivacy && "content".equalsIgnoreCase(sourceUri.getScheme())) {
+            if (!alreadyInScreenshots && !needRewriteForPrivacy && "content".equalsIgnoreCase(resolvedSource.getScheme())) {
                 try {
                     ContentValues moveVals = new ContentValues();
                     moveVals.put(MediaStore.MediaColumns.RELATIVE_PATH, relFolder);
-                    if (resolver.update(sourceUri, moveVals, null, null) > 0) {
+                    if (resolver.update(resolvedSource, moveVals, null, null) > 0) {
+                        recordOwnSavedOutput(resolvedSource, null);
                         return true;
                     }
                 } catch (Exception ignored) {
                 }
             }
-            if (copyOriginalStreamToMediaStore(context, sourceUri, relFolder, baseName)) {
-                deleteScreenshotSilently(context, optionalActivity, sourceUri);
+            if (copyOriginalStreamToMediaStore(context, resolvedSource, relFolder, baseName)) {
+                deleteScreenshotSilently(context, optionalActivity, resolvedSource);
                 return true;
             }
             if (cropped == null) {
-                cropped = loadFullResolutionBitmap(context, sourceUri);
+                cropped = loadFullResolutionBitmap(context, resolvedSource);
             }
         }
 
@@ -1861,8 +2034,8 @@ public class MediaStoreHelper {
             done.put(MediaStore.Images.Media.IS_PENDING, 0);
             resolver.update(inserted, done, null, null);
 
-            if (sourceUri != null && !Uri.EMPTY.equals(sourceUri)) {
-                deleteScreenshotSilently(context, optionalActivity, sourceUri);
+            if (resolvedSource != null && !Uri.EMPTY.equals(resolvedSource)) {
+                deleteScreenshotSilently(context, optionalActivity, resolvedSource);
             }
             return true;
         } catch (Exception e) {
