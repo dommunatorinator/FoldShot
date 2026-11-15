@@ -459,6 +459,15 @@ def test_security_and_universal_oem_features():
         "ScreenshotInterceptService runs MediaStore queries & Bitmap decoding off main thread with coalesced scheduling"
     )
 
+    # 5o. GitHub Security Tab Hygiene (SECURITY.md, Dependabot, CodeQL, Canonical Vault Paths)
+    assert_true(os.path.exists(os.path.join(WORK_DIR, "SECURITY.md")), "GitHub Security Policy SECURITY.md exists")
+    assert_true(os.path.exists(os.path.join(WORK_DIR, ".github/dependabot.yml")), "Dependabot config .github/dependabot.yml exists")
+    assert_true(os.path.exists(os.path.join(WORK_DIR, ".github/workflows/codeql.yml")), "CodeQL Code Scanning workflow .github/workflows/codeql.yml exists")
+    assert_true(
+        "resolveVaultFile" in vault_mgr_src and "getCanonicalPath" in vault_mgr_src,
+        "HiddenVaultManager enforces canonical path containment on vault file access"
+    )
+
     # 6. Expandable "More Folders" button on left of the 3 favorite folders (v2.1.0)
     assert_true("expandFoldersBtnRect" in view_src, "Small expand button rect declared on left of the 3 folders")
     assert_true("showMoreFoldersDrawer" in view_src, "In-overlay expanded folder selection drawer state implemented")

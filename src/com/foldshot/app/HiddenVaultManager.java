@@ -308,10 +308,28 @@ public class HiddenVaultManager {
         return items;
     }
 
+    private static File resolveVaultFile(Context context, String fileName) {
+        if (fileName == null || fileName.isEmpty() || fileName.contains("/") || fileName.contains("\\") || fileName.contains("..")) {
+            return null;
+        }
+        File dir = getVaultDir(context);
+        File target = new File(dir, fileName);
+        try {
+            String baseCanonical = dir.getCanonicalPath();
+            String targetCanonical = target.getCanonicalPath();
+            if (!targetCanonical.startsWith(baseCanonical + File.separator)) {
+                return null;
+            }
+        } catch (Exception e) {
+            return null;
+        }
+        return target;
+    }
+
     public static byte[] decryptItemBytes(Context context, VaultItem item) {
         if (item == null || item.fileName == null) return null;
-        File f = new File(getVaultDir(context), item.fileName);
-        if (!f.exists()) return null;
+        File f = resolveVaultFile(context, item.fileName);
+        if (f == null || !f.exists()) return null;
 
         try (DataInputStream dis = new DataInputStream(new FileInputStream(f))) {
             SecretKey key = getOrCreateVaultKey();
@@ -433,7 +451,8 @@ public class HiddenVaultManager {
 
     public static boolean deleteItem(Context context, VaultItem item) {
         if (item == null || item.fileName == null) return false;
-        File f = new File(getVaultDir(context), item.fileName);
+        File f = resolveVaultFile(context, item.fileName);
+        if (f == null) return false;
         return !f.exists() || f.delete();
     }
 
