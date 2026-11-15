@@ -100,6 +100,40 @@ I'm currently daily-driving a foldable (**Galaxy Z Fold 7**), so I made sure Fol
 
 ---
 
+## 🔄 How FoldShot Works Under the Hood (In Plain English)
+
+Curious what happens in the split second between pressing your screenshot buttons and getting a clean folder or clipboard? Here’s the whole pipeline—no tech jargon:
+
+```text
+  [1. Snap Screenshot]
+           │
+           ▼
+  [2. Smart Filter] ──► Ignores Quick Share, WhatsApp clutter & random files
+           │
+           ▼
+  [3. Instant Pop-Up] ► Shows preview + Top 3 Folders + Copy & Delete first,
+           │            then quietly loads Redact/Highlight & Extra Folders
+           ▼
+  [4. Your Turn] ─────► Crop, blackout/highlight, pick a folder, or hold ⌄ 3s
+           │
+           ▼
+  [5. Full-Res Save] ─► Uses the original full-quality photo, strips hidden
+                        GPS/camera tags, and cleans up the raw screenshot
+```
+
+1. **It listens like a smart doorbell (not a battery-draining scanner):** When you snap a screenshot—or save a photo from Messenger or Chrome if you switched those on—Android alerts FoldShot quietly. FoldShot double-checks that it’s a real screenshot and ignores incoming Quick Share, Nearby Share, Bluetooth transfers, or random app files.
+2. **It preps the preview in the background so your phone stays snappy:** FoldShot fetches and scales down a lightweight preview off the main screen thread before popping up, avoiding lag or empty placeholder boxes.
+3. **Core buttons load first; extras load a split second later:** The moment the overlay opens, your **Top 3 folders**, **Copy & Delete**, and **Save Cropped Screenshot** are ready immediately. Your extra folders (`3×3` drawer) and **Redact / Highlight** tools load right behind them so the main actions feel instant.
+4. **You crop & mark up on a thumb-friendly copy:** Dragging crop corners or drawing blackout/highlight bars happens on that smooth scaled preview—and on foldables, FoldShot adjusts automatically if you fold or unfold your screen.
+5. **Your final action always goes back to the full-resolution original:** The instant you tap an action, FoldShot grabs the untouched original image on your phone, applies your exact crop at full quality, permanently burns in any blackout redactions, and strips hidden GPS/device details (EXIF data). Everything stays **100% offline on your phone**—FoldShot doesn't even have internet permission.
+6. **Clean delivery, zero leftover clutter:**
+   * **Tap a folder** → routes your clean image straight into that folder under `DCIM` and removes the duplicate from `DCIM/Screenshots`.
+   * **Tap `Copy & Delete`** → puts your clean image on the clipboard (with an optional auto-clear timer) and silently deletes the raw screenshot.
+   * **Tap Save Cropped Screenshot** → saves only your clean cut straight into `Screenshots`.
+   * **Hold `⌄` inside More Folders for 3 seconds** → encrypts the image offline into your PIN-protected **Hidden Vault** (invisible to your regular Gallery) and removes the public screenshot.
+
+---
+
 ## 🎓 Support a Student Dev (Side Note & Honesty Disclaimer)
 
 FoldShot is **100% free and ad-free**.
