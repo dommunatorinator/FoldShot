@@ -71,6 +71,18 @@ public class ScreenshotEditorActivity extends Activity implements OneUiSmartCapt
     }
 
     @Override
+    public void onSaveScreenshot(RectF normalizedCrop) {
+        boolean isFull = normalizedCrop.left <= 0.01f && normalizedCrop.top <= 0.01f
+                && normalizedCrop.right >= 0.99f && normalizedCrop.bottom >= 0.99f;
+        Bitmap cropped = MediaStoreHelper.cropBitmap(screenshotBitmap, normalizedCrop);
+        boolean ok = MediaStoreHelper.saveCroppedScreenshot(this, this, screenshotUri, cropped, isFull);
+        if (ok) {
+            Toast.makeText(this, "Saved to Screenshots", Toast.LENGTH_SHORT).show();
+            finishAndRemoveTask();
+        }
+    }
+
+    @Override
     public void onMoveToAlbum(int slotIndex, String albumName, RectF normalizedCrop) {
         if (prefs != null && !prefs.isFolderUsable(albumName)) {
             Toast.makeText(this, "Folder not enabled in Visible Folders", Toast.LENGTH_SHORT).show();

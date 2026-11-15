@@ -228,6 +228,27 @@ def test_security_and_universal_oem_features():
         "UX Fix (v2.2.1): MainActivity reuses persistent ScrollView and restores scrollY when settings change"
     )
 
+    # 5e. Save Cropped Screenshot button between Reset Crop and Close X + crisp Reset icon
+    assert_true(
+        "saveScreenshotBtnRect" in view_src
+        and "drawSaveScreenshotIcon" in view_src
+        and "onSaveScreenshot" in view_src
+        and "saveCroppedScreenshot" in helper_src
+        and "saveCroppedScreenshot" in service_src
+        and "saveCroppedScreenshot" in editor_src,
+        "Save Cropped Screenshot button & MediaStore saveCroppedScreenshot wired across overlay and service"
+    )
+    assert_true(
+        view_src.find("resetBtnRect.set(w - 138f * dp")
+        < view_src.find("saveScreenshotBtnRect.set(w - 94f * dp")
+        < view_src.find("closeBtnRect.set(w - 50f * dp"),
+        "Save Cropped Screenshot button positioned directly between Reset Crop button and Close (X) button"
+    )
+    assert_true(
+        "canvas.drawArc(oval, -90f, 285f, false, paint)" in view_src,
+        "Reset Crop button icon uses crisp counter-clockwise circular arrow with connected arrowhead"
+    )
+
     # 6. Expandable "More Folders" button on left of the 3 favorite folders (v2.1.0)
     assert_true("expandFoldersBtnRect" in view_src, "Small expand button rect declared on left of the 3 folders")
     assert_true("showMoreFoldersDrawer" in view_src, "In-overlay expanded folder selection drawer state implemented")

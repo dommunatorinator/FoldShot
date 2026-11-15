@@ -931,6 +931,70 @@ public class MediaStoreHelper {
         }
     }
 
+    private static String resolveScreenshotRelativePath(Context context, Uri sourceUri) {
+        if (sourceUri != null && !Uri.EMPTY.equals(sourceUri) && "content".equalsIgnoreCase(sourceUri.getScheme())) {
+            try (Cursor c = context.getContentResolver().query(
+                    sourceUri,
+                    new String[]{MediaStore.Images.Media.RELATIVE_PATH},
+                    null,
+                    null,
+                    null
+            )) {
+                if (c != null && c.moveToFirst()) {
+                    int idx = c.getColumnIndex(MediaStore.Images.Media.RELATIVE_PATH);
+                    if (idx >= 0) {
+                        String rel = c.getString(idx);
+                        if (rel != null && !rel.trim().isEmpty()) {
+                            String clean = rel.trim();
+                            if (!clean.endsWith("/")) clean = clean + "/";
+                            return clean;
+                        }
+                    }
+                }
+            } catch (Exception ignored) {
+            }
+        }
+        return "Pictures/Screenshots/";
+    }
+
+    public static boolean saveCroppedScreenshot(Context context, Activity optionalActivity, Uri sourceUri, Bitmap cropped, boolean isFullCrop) {
+        if (cropped == null) return false;
+        if (isFullCrop && sourceUri != null && !Uri.EMPTY.equals(sourceUri)) {
+            return true;
+        }
+
+        ContentResolver resolver = context.getContentResolver();
+        String relFolder = resolveScreenshotRelativePath(context, sourceUri);
+
+        try {
+            ContentValues values = new ContentValues();
+            values.put(MediaStore.Images.Media.DISPLAY_NAME, "FoldShot_Screenshot_" + System.currentTimeMillis() + ".png");
+            values.put(MediaStore.Images.Media.MIME_TYPE, "image/png");
+            values.put(MediaStore.Images.Media.RELATIVE_PATH, relFolder);
+            values.put(MediaStore.Images.Media.IS_PENDING, 1);
+
+            Uri inserted = resolver.insert(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, values);
+            if (inserted == null) return false;
+
+            try (OutputStream out = resolver.openOutputStream(inserted)) {
+                if (out != null) {
+                    cropped.compress(Bitmap.CompressFormat.PNG, 100, out);
+                }
+            }
+
+            ContentValues done = new ContentValues();
+            done.put(MediaStore.Images.Media.IS_PENDING, 0);
+            resolver.update(inserted, done, null, null);
+
+            if (sourceUri != null && !Uri.EMPTY.equals(sourceUri)) {
+                deleteScreenshotSilently(context, optionalActivity, sourceUri);
+            }
+            return true;
+        } catch (Exception e) {
+            return false;
+        }
+    }
+
     public static void shareBitmap(Context context, Bitmap cropped) {
         Uri uri = copyBitmapToClipboard(context, cropped);
         if (uri == null) return;

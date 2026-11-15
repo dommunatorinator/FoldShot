@@ -27,13 +27,6 @@ jobs:
         run: |
           chmod +x tools/build_apk.sh
           bash tools/build_apk.sh
-          VERSION=$(python3 -c 'import xml.etree.ElementTree as ET; print(ET.parse("AndroidManifest.xml").getroot().attrib["{http://schemas.android.com/apk/res/android}versionName"])')
-          if [ "$VERSION" = "2.2.1" ]; then
-            curl -fsSL "https://drive.google.com/uc?export=download&id=1aj8mr5IM8JRkiB2kOQI9Ypjl1CQfOJVo" -o /tmp/drive_FoldShot.apk || true
-            if [ -f /tmp/drive_FoldShot.apk ] && echo "d7979585f6b6d263f2888a45bc0fd2e5643018cc2943717eb3508209172c0d7e  /tmp/drive_FoldShot.apk" | sha256sum -c -; then
-              cp /tmp/drive_FoldShot.apk FoldShot.apk
-            fi
-          fi
           python3 tools/verify_foldshot.py
 
       - name: Upload FoldShot APK Artifact

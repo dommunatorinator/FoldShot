@@ -37,6 +37,7 @@ public class OneUiSmartCaptureView extends View {
 
     public interface Listener {
         void onCopyAndDelete(RectF normalizedCrop);
+        void onSaveScreenshot(RectF normalizedCrop);
         void onMoveToAlbum(int slotIndex, String albumName, RectF normalizedCrop);
         void onPickAlbumForSlot(int slotIndex);
         void onTriggerScrollCapture();
@@ -73,8 +74,9 @@ public class OneUiSmartCaptureView extends View {
 
     // Hit rects for floating Smart Capture controls
     private final RectF cornerModeBtnRect = new RectF();
-    private final RectF resetBtnRect = new RectF();
     private final RectF settingsBtnRect = new RectF();
+    private final RectF resetBtnRect = new RectF();
+    private final RectF saveScreenshotBtnRect = new RectF();
     private final RectF closeBtnRect = new RectF();
     private final RectF[] menuOptionRects = new RectF[]{new RectF(), new RectF(), new RectF(), new RectF()};
     private final RectF[] scaleOptionRects = new RectF[]{new RectF(), new RectF(), new RectF()};
@@ -369,18 +371,22 @@ public class OneUiSmartCaptureView extends View {
 
         drawChevronDown(canvas, cornerModeBtnRect.right - 15f * dp, cornerModeBtnRect.centerY(), 3.5f * dp, Color.argb(hudAlpha, 160, 160, 170));
 
-        // Top-Right Circular Icon Buttons (Reset, Settings, Close)
-        closeBtnRect.set(w - 50f * dp, topBarY, w - 14f * dp, topBarY + 36f * dp);
-        drawOneUiSurface(canvas, closeBtnRect, 18f * dp, hudAlpha);
-        drawCloseIcon(canvas, closeBtnRect.centerX(), closeBtnRect.centerY(), 5.5f * dp, Color.argb(hudAlpha, 240, 240, 245));
-
-        settingsBtnRect.set(w - 94f * dp, topBarY, w - 58f * dp, topBarY + 36f * dp);
+        // Top-Right Circular Icon Buttons (Settings, Reset Crop, Save Screenshot, Close X)
+        settingsBtnRect.set(w - 182f * dp, topBarY, w - 146f * dp, topBarY + 36f * dp);
         drawOneUiSurface(canvas, settingsBtnRect, 18f * dp, hudAlpha);
         drawSlidersSettingsIcon(canvas, settingsBtnRect.centerX(), settingsBtnRect.centerY(), 6.5f * dp, Color.argb(hudAlpha, 240, 240, 245));
 
         resetBtnRect.set(w - 138f * dp, topBarY, w - 102f * dp, topBarY + 36f * dp);
         drawOneUiSurface(canvas, resetBtnRect, 18f * dp, hudAlpha);
         drawResetArrowIcon(canvas, resetBtnRect.centerX(), resetBtnRect.centerY(), 6.5f * dp, Color.argb(hudAlpha, 240, 240, 245));
+
+        saveScreenshotBtnRect.set(w - 94f * dp, topBarY, w - 58f * dp, topBarY + 36f * dp);
+        drawOneUiSurface(canvas, saveScreenshotBtnRect, 18f * dp, hudAlpha);
+        drawSaveScreenshotIcon(canvas, saveScreenshotBtnRect.centerX(), saveScreenshotBtnRect.centerY(), 6.5f * dp, Color.argb(hudAlpha, 240, 240, 245));
+
+        closeBtnRect.set(w - 50f * dp, topBarY, w - 14f * dp, topBarY + 36f * dp);
+        drawOneUiSurface(canvas, closeBtnRect, 18f * dp, hudAlpha);
+        drawCloseIcon(canvas, closeBtnRect.centerX(), closeBtnRect.centerY(), 5.5f * dp, Color.argb(hudAlpha, 240, 240, 245));
 
         // 7. Bottom Native Smart Capture Floating Dock (near bottom of screen, draggable vertically)
         float clearancePx = prefs.getDockBottomClearanceDp() * dp;
@@ -918,10 +924,46 @@ public class OneUiSmartCaptureView extends View {
         paint.setColor(color);
         paint.setStrokeWidth(1.8f * dp);
         paint.setStrokeCap(Paint.Cap.ROUND);
-        RectF oval = new RectF(cx - s, cy - s, cx + s, cy + s);
-        canvas.drawArc(oval, -200f, 290f, false, paint);
-        canvas.drawLine(cx - s, cy - s * 0.2f, cx - s * 0.35f, cy - s * 0.85f, paint);
-        canvas.drawLine(cx - s, cy - s * 0.2f, cx - s * 0.3f, cy + s * 0.2f, paint);
+        paint.setStrokeJoin(Paint.Join.ROUND);
+
+        float r = s * 0.82f;
+        float ocy = cy + s * 0.08f;
+        float topY = ocy - r;
+        RectF oval = new RectF(cx - r, ocy - r, cx + r, ocy + r);
+        canvas.drawArc(oval, -90f, 285f, false, paint);
+
+        float tipX = cx - s * 0.18f;
+        canvas.drawLine(cx, topY, tipX, topY, paint);
+
+        path.reset();
+        path.moveTo(tipX + s * 0.48f, topY - s * 0.44f);
+        path.lineTo(tipX, topY);
+        path.lineTo(tipX + s * 0.48f, topY + s * 0.44f);
+        canvas.drawPath(path, paint);
+    }
+
+    private void drawSaveScreenshotIcon(Canvas canvas, float cx, float cy, float s, int color) {
+        paint.setStyle(Paint.Style.STROKE);
+        paint.setColor(color);
+        paint.setStrokeWidth(1.8f * dp);
+        paint.setStrokeCap(Paint.Cap.ROUND);
+        paint.setStrokeJoin(Paint.Join.ROUND);
+
+        // Downward arrow shaft & chevron
+        canvas.drawLine(cx, cy - s * 0.82f, cx, cy + s * 0.28f, paint);
+        path.reset();
+        path.moveTo(cx - s * 0.48f, cy - s * 0.16f);
+        path.lineTo(cx, cy + s * 0.32f);
+        path.lineTo(cx + s * 0.48f, cy - s * 0.16f);
+        canvas.drawPath(path, paint);
+
+        // Bottom tray
+        path.reset();
+        path.moveTo(cx - s * 0.82f, cy + s * 0.25f);
+        path.lineTo(cx - s * 0.82f, cy + s * 0.80f);
+        path.lineTo(cx + s * 0.82f, cy + s * 0.80f);
+        path.lineTo(cx + s * 0.82f, cy + s * 0.25f);
+        canvas.drawPath(path, paint);
     }
 
     private void drawSlidersSettingsIcon(Canvas canvas, float cx, float cy, float s, int color) {
@@ -1024,6 +1066,11 @@ public class OneUiSmartCaptureView extends View {
         }
         if (closeBtnRect.contains(x, y)) {
             listener.onCloseOverlay();
+            return true;
+        }
+        if (saveScreenshotBtnRect.contains(x, y)) {
+            performHapticFeedback(HapticFeedbackConstants.LONG_PRESS);
+            listener.onSaveScreenshot(getNormalizedCrop());
             return true;
         }
         if (resetBtnRect.contains(x, y)) {

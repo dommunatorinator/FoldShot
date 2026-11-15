@@ -137,12 +137,12 @@ public class ScreenshotInterceptService extends Service {
             }
             pendingStitchBitmap = null;
             pendingStitchFirstUri = null;
-            showAutoOpenHud(latest.uri, combined);
+            showAutoOpenHud(latest.uri, combined, true);
             Toast.makeText(getApplicationContext(), "Long Screenshot stitched!", Toast.LENGTH_SHORT).show();
             return;
         }
 
-        showAutoOpenHud(latest.uri, newBmp);
+        showAutoOpenHud(latest.uri, newBmp, false);
     }
 
     private final DisplayManager.DisplayListener displayListener = new DisplayManager.DisplayListener() {
@@ -237,7 +237,12 @@ public class ScreenshotInterceptService extends Service {
     }
 
     private void showAutoOpenHud(final Uri screenshotUri, Bitmap initialBitmap) {
+        showAutoOpenHud(screenshotUri, initialBitmap, false);
+    }
+
+    private void showAutoOpenHud(final Uri screenshotUri, Bitmap initialBitmap, boolean initiallyStitched) {
         final Bitmap[] currentBmp = new Bitmap[]{initialBitmap};
+        final boolean[] isStitched = new boolean[]{initiallyStitched};
 
         if (Settings.canDrawOverlays(this)) {
             removeActiveOverlay();
@@ -254,12 +259,26 @@ public class ScreenshotInterceptService extends Service {
                 }
 
                 @Override
+                public void onSaveScreenshot(RectF normalizedCrop) {
+                    boolean isFull = !isStitched[0]
+                            && normalizedCrop.left <= 0.01f && normalizedCrop.top <= 0.01f
+                            && normalizedCrop.right >= 0.99f && normalizedCrop.bottom >= 0.99f;
+                    Bitmap cropped = MediaStoreHelper.cropBitmap(currentBmp[0], normalizedCrop);
+                    MediaStoreHelper.saveCroppedScreenshot(
+                            getApplicationContext(), null, screenshotUri, cropped, isFull
+                    );
+                    Toast.makeText(getApplicationContext(), "Saved to Screenshots", Toast.LENGTH_SHORT).show();
+                    removeActiveOverlay();
+                }
+
+                @Override
                 public void onMoveToAlbum(int slotIndex, String albumName, RectF normalizedCrop) {
                     if (!prefs.isFolderUsable(albumName)) {
                         Toast.makeText(getApplicationContext(), "Folder not enabled in Visible Folders", Toast.LENGTH_SHORT).show();
                         return;
                     }
-                    boolean isFull = normalizedCrop.left <= 0.01f && normalizedCrop.top <= 0.01f
+                    boolean isFull = !isStitched[0]
+                            && normalizedCrop.left <= 0.01f && normalizedCrop.top <= 0.01f
                             && normalizedCrop.right >= 0.99f && normalizedCrop.bottom >= 0.99f;
                     Bitmap cropped = MediaStoreHelper.cropBitmap(currentBmp[0], normalizedCrop);
                     MediaStoreHelper.moveBitmapToFavoriteAlbum(
@@ -282,6 +301,7 @@ public class ScreenshotInterceptService extends Service {
                     if (Uri.EMPTY.equals(screenshotUri)) {
                         Bitmap nextSlice = createSampleOneUiBitmap(2);
                         currentBmp[0] = MediaStoreHelper.stitchBitmapsVertically(currentBmp[0], nextSlice);
+                        isStitched[0] = true;
                         activeOverlayView.setScreenshotBitmap(currentBmp[0]);
                         activeOverlayView.resetCrop();
                         Toast.makeText(getApplicationContext(), "Long Screenshot Stitched!", Toast.LENGTH_SHORT).show();
