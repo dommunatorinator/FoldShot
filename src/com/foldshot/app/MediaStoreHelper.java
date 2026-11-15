@@ -28,6 +28,8 @@ import android.media.ExifInterface;
 import android.net.Uri;
 import android.os.Build;
 import android.os.Environment;
+import android.os.Handler;
+import android.os.Looper;
 import android.os.PowerManager;
 import android.os.storage.StorageManager;
 import android.os.storage.StorageVolume;
@@ -38,19 +40,24 @@ import android.view.Display;
 import android.view.WindowInsets;
 import android.view.WindowManager;
 import android.view.WindowMetrics;
+import java.io.ByteArrayOutputStream;
 import java.io.File;
 import java.io.FileInputStream;
 import java.io.FileOutputStream;
 import java.io.InputStream;
 import java.io.OutputStream;
+import java.text.SimpleDateFormat;
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.Date;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 
 /**
  * Universal Play-Protect-Safe MediaStore, Multi-Volume FileObserver, Display Metrics & OEM Helper.
@@ -69,6 +76,37 @@ public class MediaStoreHelper {
     public static final int REQ_DELETE_SCREENSHOT = 901;
     public static final int MAX_DECODE_SIDE_PX = 2560;
     public static final int MAX_STITCH_HEIGHT = 6144;
+
+    private static final Set<String> OWN_SAVED_KEYS = Collections.synchronizedSet(new LinkedHashSet<>());
+
+    public static void recordOwnSavedOutput(Uri uri, String displayName) {
+        if (OWN_SAVED_KEYS.size() > 80) {
+            OWN_SAVED_KEYS.clear();
+        }
+        if (uri != null) {
+            OWN_SAVED_KEYS.add(uri.toString());
+        }
+        if (displayName != null && !displayName.isEmpty()) {
+            OWN_SAVED_KEYS.add(displayName.toLowerCase(Locale.US));
+            String noExt = displayName;
+            int dot = noExt.lastIndexOf('.');
+            if (dot > 0) noExt = noExt.substring(0, dot);
+            OWN_SAVED_KEYS.add(noExt.toLowerCase(Locale.US));
+        }
+    }
+
+    public static boolean isOwnSavedOutput(Uri uri, String displayName) {
+        if (uri != null && OWN_SAVED_KEYS.contains(uri.toString())) {
+            return true;
+        }
+        if (displayName != null && !displayName.isEmpty()) {
+            String lower = displayName.toLowerCase(Locale.US);
+            if (OWN_SAVED_KEYS.contains(lower)) return true;
+            int dot = lower.lastIndexOf('.');
+            if (dot > 0 && OWN_SAVED_KEYS.contains(lower.substring(0, dot))) return true;
+        }
+        return false;
+    }
 
     public enum PhotoAccessState {
         ALL,
@@ -617,7 +655,7 @@ public class MediaStoreHelper {
             for (File f : files) {
                 if (!f.isFile() || f.length() < 1024L) continue;
                 String name = f.getName();
-                if (name.startsWith(".") || name.startsWith("FoldShot_")) continue;
+                if (name.startsWith(".") || name.startsWith("FoldShot_") || isOwnSavedOutput(null, name)) continue;
                 String lower = name.toLowerCase(Locale.US);
                 if (!lower.endsWith(".png") && !lower.endsWith(".jpg") && !lower.endsWith(".jpeg") && !lower.endsWith(".webp")) {
                     continue;
@@ -856,7 +894,7 @@ public class MediaStoreHelper {
             String relPath = pathCol >= 0 ? cursor.getString(pathCol) : null;
             String dataPath = dataCol >= 0 ? cursor.getString(dataCol) : null;
 
-            if (name != null && (name.startsWith("FoldShot_") || name.startsWith("."))) continue;
+            if (name != null && (name.startsWith("FoldShot_") || name.startsWith(".") || isOwnSavedOutput(null, name))) continue;
 
             String lowerName = name != null ? name.toLowerCase(Locale.US) : "";
             if (lowerName.endsWith(".crdownload") || lowerName.endsWith(".tmp") || lowerName.endsWith(".part")) {
@@ -1223,8 +1261,154 @@ public class MediaStoreHelper {
         return result;
     }
 
+    private static final Handler CLIP_CLEAR_HANDLER = new Handler(Looper.getMainLooper());
+    private static final ExecutorService PRIVACY_EXECUTOR = Executors.newSingleThreadExecutor();
+    private static Runnable pendingClipClearRunnable = null;
+
+    public static String buildOutputBaseName(FoldShotPrefs prefs, String defaultPrefix) {
+        if (prefs != null && prefs.isAnonymousFilenameEnabled()) {
+            String ts = new SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(new Date());
+            long ms = System.currentTimeMillis() % 1000L;
+            return "IMG_" + ts + "_" + String.format(Locale.US, "%03d", ms);
+        }
+        return defaultPrefix + "_" + System.currentTimeMillis();
+    }
+
+    public static boolean stripExifMetadataFromFile(File imageFile) {
+        if (imageFile == null || !imageFile.exists()) return false;
+        try {
+            ExifInterface exif = new ExifInterface(imageFile.getAbsolutePath());
+            String[] sensitiveTags = new String[]{
+                    ExifInterface.TAG_GPS_LATITUDE,
+                    ExifInterface.TAG_GPS_LATITUDE_REF,
+                    ExifInterface.TAG_GPS_LONGITUDE,
+                    ExifInterface.TAG_GPS_LONGITUDE_REF,
+                    ExifInterface.TAG_GPS_ALTITUDE,
+                    ExifInterface.TAG_GPS_ALTITUDE_REF,
+                    ExifInterface.TAG_GPS_TIMESTAMP,
+                    ExifInterface.TAG_GPS_DATESTAMP,
+                    ExifInterface.TAG_GPS_PROCESSING_METHOD,
+                    ExifInterface.TAG_GPS_AREA_INFORMATION,
+                    ExifInterface.TAG_GPS_SPEED,
+                    ExifInterface.TAG_GPS_DEST_BEARING,
+                    ExifInterface.TAG_MAKE,
+                    ExifInterface.TAG_MODEL,
+                    ExifInterface.TAG_SOFTWARE,
+                    ExifInterface.TAG_ARTIST,
+                    ExifInterface.TAG_COPYRIGHT,
+                    ExifInterface.TAG_IMAGE_DESCRIPTION,
+                    ExifInterface.TAG_USER_COMMENT,
+                    "CameraOwnerName",
+                    "BodySerialNumber",
+                    "LensMake",
+                    "LensModel",
+                    "LensSerialNumber",
+                    ExifInterface.TAG_DATETIME,
+                    ExifInterface.TAG_DATETIME_ORIGINAL,
+                    ExifInterface.TAG_DATETIME_DIGITIZED,
+                    ExifInterface.TAG_SUBSEC_TIME,
+                    ExifInterface.TAG_SUBSEC_TIME_ORIGINAL,
+                    ExifInterface.TAG_SUBSEC_TIME_DIGITIZED
+            };
+            for (String tag : sensitiveTags) {
+                exif.setAttribute(tag, null);
+            }
+            exif.saveAttributes();
+            return true;
+        } catch (Throwable ignored) {
+            return false;
+        }
+    }
+
+    public static byte[] readCleanSourceBytes(Context context, Uri sourceUri, String ext, boolean stripMetadata) {
+        if (sourceUri == null || Uri.EMPTY.equals(sourceUri)) return null;
+        if (stripMetadata && ".jpg".equalsIgnoreCase(ext)) {
+            File tmp = null;
+            try {
+                tmp = File.createTempFile("fs_scrub_", ".jpg", context.getCacheDir());
+                try (InputStream in = openUriStream(context, sourceUri);
+                     FileOutputStream out = new FileOutputStream(tmp)) {
+                    if (in == null) return null;
+                    byte[] buf = new byte[16384];
+                    int len;
+                    while ((len = in.read(buf)) != -1) {
+                        out.write(buf, 0, len);
+                    }
+                    out.flush();
+                }
+                stripExifMetadataFromFile(tmp);
+                try (FileInputStream fis = new FileInputStream(tmp)) {
+                    ByteArrayOutputStream bos = new ByteArrayOutputStream();
+                    byte[] buf = new byte[16384];
+                    int len;
+                    while ((len = fis.read(buf)) != -1) {
+                        bos.write(buf, 0, len);
+                    }
+                    return bos.toByteArray();
+                }
+            } catch (Exception ignored) {
+            } finally {
+                if (tmp != null && tmp.exists()) {
+                    tmp.delete();
+                }
+            }
+        }
+        try (InputStream in = openUriStream(context, sourceUri)) {
+            if (in == null) return null;
+            ByteArrayOutputStream bos = new ByteArrayOutputStream();
+            byte[] buf = new byte[16384];
+            int len;
+            while ((len = in.read(buf)) != -1) {
+                bos.write(buf, 0, len);
+            }
+            return bos.toByteArray();
+        } catch (Exception ignored) {
+            return null;
+        }
+    }
+
+    public static void clearClipboardAndCache(Context context) {
+        if (context == null) return;
+        try {
+            ClipboardManager clipboard = (ClipboardManager) context.getSystemService(Context.CLIPBOARD_SERVICE);
+            if (clipboard != null) {
+                if (Build.VERSION.SDK_INT >= 28) {
+                    clipboard.clearPrimaryClip();
+                } else {
+                    clipboard.setPrimaryClip(ClipData.newPlainText("", ""));
+                }
+            }
+        } catch (Exception ignored) {
+        }
+        try {
+            File clipDir = new File(context.getCacheDir(), "clipboard");
+            File[] files = clipDir.listFiles();
+            if (files != null) {
+                for (File f : files) f.delete();
+            }
+        } catch (Exception ignored) {
+        }
+    }
+
+    private static void scheduleClipboardAutoClear(Context context) {
+        FoldShotPrefs prefs = new FoldShotPrefs(context);
+        int clearSec = prefs.getClipboardAutoClearSec();
+        final Context appCtx = context.getApplicationContext();
+        synchronized (MediaStoreHelper.class) {
+            if (pendingClipClearRunnable != null) {
+                CLIP_CLEAR_HANDLER.removeCallbacks(pendingClipClearRunnable);
+                pendingClipClearRunnable = null;
+            }
+            if (clearSec > 0) {
+                pendingClipClearRunnable = () -> clearClipboardAndCache(appCtx);
+                CLIP_CLEAR_HANDLER.postDelayed(pendingClipClearRunnable, clearSec * 1000L);
+            }
+        }
+    }
+
     public static Uri copyBitmapToClipboard(Context context, Bitmap cropped) {
         try {
+            FoldShotPrefs prefs = new FoldShotPrefs(context);
             File clipDir = new File(context.getCacheDir(), "clipboard");
             if (!clipDir.exists()) clipDir.mkdirs();
             File[] oldFiles = clipDir.listFiles();
@@ -1232,7 +1416,7 @@ public class MediaStoreHelper {
                 for (File f : oldFiles) f.delete();
             }
 
-            File outFile = new File(clipDir, "FoldShot_" + System.currentTimeMillis() + ".png");
+            File outFile = new File(clipDir, buildOutputBaseName(prefs, "FoldShot") + ".png");
             try (FileOutputStream out = new FileOutputStream(outFile)) {
                 cropped.compress(Bitmap.CompressFormat.PNG, 100, out);
                 out.flush();
@@ -1242,10 +1426,78 @@ public class MediaStoreHelper {
             ClipboardManager clipboard = (ClipboardManager) context.getSystemService(Context.CLIPBOARD_SERVICE);
             ClipData clip = ClipData.newUri(context.getContentResolver(), "FoldShot Crop", clipUri);
             clipboard.setPrimaryClip(clip);
+            scheduleClipboardAutoClear(context);
             return clipUri;
         } catch (Exception e) {
             return null;
         }
+    }
+
+    public static int runAutoExpireCleanup(Context context, boolean force) {
+        if (context == null) return 0;
+        final Context appCtx = context.getApplicationContext();
+        final FoldShotPrefs prefs = new FoldShotPrefs(appCtx);
+        final int ttlHours = prefs.getAutoExpireTtlHours();
+        final String targetFolder = prefs.getAutoExpireFolderName();
+        if (ttlHours <= 0 || targetFolder == null || targetFolder.trim().isEmpty()) {
+            return 0;
+        }
+        long nowMs = System.currentTimeMillis();
+        if (!force && (nowMs - prefs.getLastAutoExpireRunMs()) < 15L * 60L * 1000L) {
+            return 0;
+        }
+        prefs.setLastAutoExpireRunMs(nowMs);
+
+        if (!force) {
+            PRIVACY_EXECUTOR.execute(() -> performAutoExpireCleanupSync(appCtx, targetFolder.trim(), ttlHours));
+            return 0;
+        }
+        return performAutoExpireCleanupSync(appCtx, targetFolder.trim(), ttlHours);
+    }
+
+    private static int performAutoExpireCleanupSync(Context context, String targetFolder, int ttlHours) {
+        int removed = 0;
+        long cutoffSec = (System.currentTimeMillis() / 1000L) - (ttlHours * 3600L);
+        ContentResolver resolver = context.getContentResolver();
+        String[] proj = new String[]{
+                MediaStore.Images.Media._ID,
+                MediaStore.Images.Media.BUCKET_DISPLAY_NAME,
+                MediaStore.Images.Media.DATE_MODIFIED,
+                MediaStore.Images.Media.DATE_ADDED
+        };
+        try (Cursor c = resolver.query(
+                MediaStore.Images.Media.EXTERNAL_CONTENT_URI,
+                proj,
+                null,
+                null,
+                null
+        )) {
+            if (c != null) {
+                int idCol = c.getColumnIndex(MediaStore.Images.Media._ID);
+                int bucketCol = c.getColumnIndex(MediaStore.Images.Media.BUCKET_DISPLAY_NAME);
+                int modCol = c.getColumnIndex(MediaStore.Images.Media.DATE_MODIFIED);
+                int addCol = c.getColumnIndex(MediaStore.Images.Media.DATE_ADDED);
+                while (c.moveToNext()) {
+                    String bucket = bucketCol >= 0 ? c.getString(bucketCol) : null;
+                    if (bucket == null || !bucket.trim().equalsIgnoreCase(targetFolder)) continue;
+                    long modSec = modCol >= 0 ? normalizeTimestampSeconds(c.getLong(modCol)) : 0L;
+                    long addSec = addCol >= 0 ? normalizeTimestampSeconds(c.getLong(addCol)) : 0L;
+                    long itemSec = Math.max(modSec, addSec);
+                    if (itemSec <= 0L || itemSec >= cutoffSec) continue;
+                    long id = idCol >= 0 ? c.getLong(idCol) : -1L;
+                    if (id < 0) continue;
+                    Uri uri = ContentUris.withAppendedId(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, id);
+                    try {
+                        if (resolver.delete(uri, null, null) > 0) {
+                            removed++;
+                        }
+                    } catch (SecurityException ignored) {
+                    }
+                }
+            }
+        } catch (Exception ignored) {
+        }
+        return removed;
     }
 
     public static boolean deleteScreenshotSilently(Context context, Activity optionalActivity, Uri sourceUri) {
@@ -1305,7 +1557,7 @@ public class MediaStoreHelper {
         return "Pictures/" + clean + "/";
     }
 
-    private static String[] detectSourceMimeAndExt(Context context, Uri sourceUri) {
+    public static String[] detectSourceMimeAndExt(Context context, Uri sourceUri) {
         String mimeType = null;
         String displayName = null;
         ContentResolver resolver = context.getContentResolver();
@@ -1390,6 +1642,8 @@ public class MediaStoreHelper {
     ) {
         if (sourceUri == null || Uri.EMPTY.equals(sourceUri)) return false;
         ContentResolver resolver = context.getContentResolver();
+        FoldShotPrefs prefs = new FoldShotPrefs(context);
+        boolean stripMetadata = prefs.isStripMetadataEnabled();
         String[] mimeAndExt = detectSourceMimeAndExt(context, sourceUri);
         String mimeType = mimeAndExt[0];
         String ext = mimeAndExt[1];
@@ -1405,20 +1659,37 @@ public class MediaStoreHelper {
             inserted = resolver.insert(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, values);
             if (inserted == null) return false;
 
-            try (InputStream in = openUriStream(context, sourceUri);
-                 OutputStream out = resolver.openOutputStream(inserted)) {
-                if (in == null || out == null) {
+            if (stripMetadata && ".jpg".equalsIgnoreCase(ext)) {
+                byte[] scrubbed = readCleanSourceBytes(context, sourceUri, ext, true);
+                if (scrubbed == null || scrubbed.length == 0) {
                     resolver.delete(inserted, null, null);
                     return false;
                 }
-                byte[] buf = new byte[16384];
-                int len;
-                while ((len = in.read(buf)) != -1) {
-                    out.write(buf, 0, len);
+                try (OutputStream out = resolver.openOutputStream(inserted)) {
+                    if (out == null) {
+                        resolver.delete(inserted, null, null);
+                        return false;
+                    }
+                    out.write(scrubbed);
+                    out.flush();
                 }
-                out.flush();
+            } else {
+                try (InputStream in = openUriStream(context, sourceUri);
+                     OutputStream out = resolver.openOutputStream(inserted)) {
+                    if (in == null || out == null) {
+                        resolver.delete(inserted, null, null);
+                        return false;
+                    }
+                    byte[] buf = new byte[16384];
+                    int len;
+                    while ((len = in.read(buf)) != -1) {
+                        out.write(buf, 0, len);
+                    }
+                    out.flush();
+                }
             }
 
+            recordOwnSavedOutput(inserted, baseDisplayName + ext);
             ContentValues done = new ContentValues();
             done.put(MediaStore.Images.Media.IS_PENDING, 0);
             resolver.update(inserted, done, null, null);
@@ -1436,10 +1707,14 @@ public class MediaStoreHelper {
 
     public static boolean moveBitmapToFavoriteAlbum(Context context, Activity optionalActivity, Uri sourceUri, Bitmap cropped, String albumName, boolean isFullCrop) {
         ContentResolver resolver = context.getContentResolver();
+        FoldShotPrefs prefs = new FoldShotPrefs(context);
         String relFolder = resolveRelativePathForAlbum(context, albumName);
+        String baseName = buildOutputBaseName(prefs, "FoldShot");
 
         if (isFullCrop && sourceUri != null && !Uri.EMPTY.equals(sourceUri)) {
-            if ("content".equalsIgnoreCase(sourceUri.getScheme())) {
+            boolean needRewriteForPrivacy = prefs.isAnonymousFilenameEnabled()
+                    || (prefs.isStripMetadataEnabled() && ".jpg".equalsIgnoreCase(detectSourceMimeAndExt(context, sourceUri)[1]));
+            if (!needRewriteForPrivacy && "content".equalsIgnoreCase(sourceUri.getScheme())) {
                 try {
                     ContentValues moveVals = new ContentValues();
                     moveVals.put(MediaStore.MediaColumns.RELATIVE_PATH, relFolder);
@@ -1449,7 +1724,7 @@ public class MediaStoreHelper {
                 } catch (Exception ignored) {
                 }
             }
-            if (copyOriginalStreamToMediaStore(context, sourceUri, relFolder, "FoldShot_" + System.currentTimeMillis())) {
+            if (copyOriginalStreamToMediaStore(context, sourceUri, relFolder, baseName)) {
                 deleteScreenshotSilently(context, optionalActivity, sourceUri);
                 return true;
             }
@@ -1461,7 +1736,7 @@ public class MediaStoreHelper {
         if (cropped == null) return false;
         try {
             ContentValues values = new ContentValues();
-            values.put(MediaStore.Images.Media.DISPLAY_NAME, "FoldShot_" + System.currentTimeMillis() + ".png");
+            values.put(MediaStore.Images.Media.DISPLAY_NAME, baseName + ".png");
             values.put(MediaStore.Images.Media.MIME_TYPE, "image/png");
             values.put(MediaStore.Images.Media.RELATIVE_PATH, relFolder);
             values.put(MediaStore.Images.Media.IS_PENDING, 1);
@@ -1475,6 +1750,7 @@ public class MediaStoreHelper {
                 }
             }
 
+            recordOwnSavedOutput(inserted, baseName + ".png");
             ContentValues done = new ContentValues();
             done.put(MediaStore.Images.Media.IS_PENDING, 0);
             resolver.update(inserted, done, null, null);
@@ -1521,9 +1797,13 @@ public class MediaStoreHelper {
 
     public static boolean saveCroppedScreenshot(Context context, Activity optionalActivity, Uri sourceUri, Bitmap cropped, boolean isFullCrop) {
         ContentResolver resolver = context.getContentResolver();
+        FoldShotPrefs prefs = new FoldShotPrefs(context);
         String relFolder = resolveScreenshotRelativePath(context, sourceUri);
+        String baseName = buildOutputBaseName(prefs, "FoldShot_Screenshot");
 
         if (isFullCrop && sourceUri != null && !Uri.EMPTY.equals(sourceUri)) {
+            boolean needRewriteForPrivacy = prefs.isAnonymousFilenameEnabled()
+                    || (prefs.isStripMetadataEnabled() && ".jpg".equalsIgnoreCase(detectSourceMimeAndExt(context, sourceUri)[1]));
             boolean alreadyInScreenshots = false;
             if ("content".equalsIgnoreCase(sourceUri.getScheme())) {
                 try (Cursor c = resolver.query(sourceUri, new String[]{MediaStore.Images.Media.RELATIVE_PATH}, null, null, null)) {
@@ -1537,10 +1817,10 @@ public class MediaStoreHelper {
                 } catch (Exception ignored) {
                 }
             }
-            if (alreadyInScreenshots) {
+            if (alreadyInScreenshots && !needRewriteForPrivacy) {
                 return true;
             }
-            if ("content".equalsIgnoreCase(sourceUri.getScheme())) {
+            if (!alreadyInScreenshots && !needRewriteForPrivacy && "content".equalsIgnoreCase(sourceUri.getScheme())) {
                 try {
                     ContentValues moveVals = new ContentValues();
                     moveVals.put(MediaStore.MediaColumns.RELATIVE_PATH, relFolder);
@@ -1550,7 +1830,7 @@ public class MediaStoreHelper {
                 } catch (Exception ignored) {
                 }
             }
-            if (copyOriginalStreamToMediaStore(context, sourceUri, relFolder, "FoldShot_Screenshot_" + System.currentTimeMillis())) {
+            if (copyOriginalStreamToMediaStore(context, sourceUri, relFolder, baseName)) {
                 deleteScreenshotSilently(context, optionalActivity, sourceUri);
                 return true;
             }
@@ -1562,7 +1842,7 @@ public class MediaStoreHelper {
         if (cropped == null) return false;
         try {
             ContentValues values = new ContentValues();
-            values.put(MediaStore.Images.Media.DISPLAY_NAME, "FoldShot_Screenshot_" + System.currentTimeMillis() + ".png");
+            values.put(MediaStore.Images.Media.DISPLAY_NAME, baseName + ".png");
             values.put(MediaStore.Images.Media.MIME_TYPE, "image/png");
             values.put(MediaStore.Images.Media.RELATIVE_PATH, relFolder);
             values.put(MediaStore.Images.Media.IS_PENDING, 1);
@@ -1576,6 +1856,7 @@ public class MediaStoreHelper {
                 }
             }
 
+            recordOwnSavedOutput(inserted, baseName + ".png");
             ContentValues done = new ContentValues();
             done.put(MediaStore.Images.Media.IS_PENDING, 0);
             resolver.update(inserted, done, null, null);

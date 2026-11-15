@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     package="com.foldshot.app"
-    android:versionCode="17"
+    android:versionCode="18"
     android:versionName="2.2.1">
 
     <uses-sdk
@@ -54,6 +54,16 @@
             android:autoRemoveFromRecents="true"
             android:launchMode="singleTop"
             android:theme="@android:style/Theme.Translucent.NoTitleBar.Fullscreen"
+            android:configChanges="screenSize|smallestScreenSize|screenLayout|orientation|density" />
+
+        <!-- Encrypted Offline Hidden Vault Viewer -->
+        <activity
+            android:name=".HiddenVaultActivity"
+            android:exported="false"
+            android:excludeFromRecents="true"
+            android:autoRemoveFromRecents="true"
+            android:launchMode="singleTop"
+            android:theme="@android:style/Theme.DeviceDefault.NoActionBar"
             android:configChanges="screenSize|smallestScreenSize|screenLayout|orientation|density" />
 
         <!-- Background Screenshot Watcher & Overlay Utility Service -->

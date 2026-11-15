@@ -45,6 +45,17 @@ public class FoldShotPrefs {
     private static final String KEY_AUTO_BACKUP_URI = "profile_auto_backup_uri";
     private static final String KEY_SAF_BACKUP_URI = "profile_saf_backup_uri";
     private static final String KEY_LAST_BACKUP_TS = "profile_last_backup_ts";
+    private static final String KEY_VAULT_PIN_SALT = "vault_pin_salt";
+    private static final String KEY_VAULT_PIN_HASH = "vault_pin_hash";
+    private static final String KEY_VAULT_UNLOCK_SPOT = "vault_unlock_spot";
+    private static final String KEY_STRIP_METADATA = "privacy_strip_metadata";
+    private static final String KEY_CLIPBOARD_AUTO_CLEAR_SEC = "privacy_clipboard_clear_sec";
+    private static final String KEY_AUTO_EXPIRE_FOLDER = "privacy_auto_expire_folder";
+    private static final String KEY_AUTO_EXPIRE_TTL_HOURS = "privacy_auto_expire_ttl_hours";
+    private static final String KEY_LAST_AUTO_EXPIRE_MS = "privacy_last_auto_expire_ms";
+    private static final String KEY_ANONYMOUS_FILENAME = "privacy_anonymous_filename";
+    private static final String KEY_SECURE_OVERLAY = "privacy_secure_overlay";
+    private static final String KEY_CROP_ASPECT_RATIO = "crop_aspect_ratio";
     private static final int MAX_PROFILE_BYTES = 1024 * 1024;
 
     private static final Handler MAIN_HANDLER = new Handler(Looper.getMainLooper());
@@ -326,6 +337,127 @@ public class FoldShotPrefs {
         markConfiguredAndBackup();
     }
 
+    public boolean hasVaultPin() {
+        String salt = prefs.getString(KEY_VAULT_PIN_SALT, "");
+        String hash = prefs.getString(KEY_VAULT_PIN_HASH, "");
+        return salt != null && !salt.isEmpty() && hash != null && !hash.isEmpty();
+    }
+
+    public String getVaultPinSalt() {
+        return prefs.getString(KEY_VAULT_PIN_SALT, "");
+    }
+
+    public String getVaultPinHash() {
+        return prefs.getString(KEY_VAULT_PIN_HASH, "");
+    }
+
+    public void setVaultPinCredentials(String saltBase64, String hashBase64) {
+        prefs.edit()
+                .putString(KEY_VAULT_PIN_SALT, saltBase64 != null ? saltBase64 : "")
+                .putString(KEY_VAULT_PIN_HASH, hashBase64 != null ? hashBase64 : "")
+                .apply();
+    }
+
+    public String getVaultUnlockSpot() {
+        String spot = prefs.getString(KEY_VAULT_UNLOCK_SPOT, "summer_cat");
+        if ("summer_cat".equals(spot) || "title".equals(spot) || "subtitle".equals(spot)
+                || "system_header".equals(spot) || "profile_header".equals(spot)) {
+            return spot;
+        }
+        return "summer_cat";
+    }
+
+    public void setVaultUnlockSpot(String spot) {
+        if (!"summer_cat".equals(spot) && !"title".equals(spot) && !"subtitle".equals(spot)
+                && !"system_header".equals(spot) && !"profile_header".equals(spot)) {
+            spot = "summer_cat";
+        }
+        prefs.edit().putString(KEY_VAULT_UNLOCK_SPOT, spot).apply();
+        markConfiguredAndBackup();
+    }
+
+    public boolean isStripMetadataEnabled() {
+        return prefs.getBoolean(KEY_STRIP_METADATA, true);
+    }
+
+    public void setStripMetadataEnabled(boolean enabled) {
+        prefs.edit().putBoolean(KEY_STRIP_METADATA, enabled).apply();
+        markConfiguredAndBackup();
+    }
+
+    public int getClipboardAutoClearSec() {
+        int val = prefs.getInt(KEY_CLIPBOARD_AUTO_CLEAR_SEC, 0);
+        if (val == 30 || val == 120 || val == 300) return val;
+        return 0;
+    }
+
+    public void setClipboardAutoClearSec(int seconds) {
+        int clean = (seconds == 30 || seconds == 120 || seconds == 300) ? seconds : 0;
+        prefs.edit().putInt(KEY_CLIPBOARD_AUTO_CLEAR_SEC, clean).apply();
+        markConfiguredAndBackup();
+    }
+
+    public String getAutoExpireFolderName() {
+        String folder = prefs.getString(KEY_AUTO_EXPIRE_FOLDER, "Temp");
+        return (folder == null || folder.trim().isEmpty()) ? "Temp" : folder.trim();
+    }
+
+    public void setAutoExpireFolderName(String folderName) {
+        String clean = (folderName == null || folderName.trim().isEmpty()) ? "Temp" : folderName.trim();
+        prefs.edit().putString(KEY_AUTO_EXPIRE_FOLDER, clean).apply();
+        markConfiguredAndBackup();
+    }
+
+    public int getAutoExpireTtlHours() {
+        int val = prefs.getInt(KEY_AUTO_EXPIRE_TTL_HOURS, 0);
+        if (val == 24 || val == 72 || val == 168) return val;
+        return 0;
+    }
+
+    public void setAutoExpireTtlHours(int hours) {
+        int clean = (hours == 24 || hours == 72 || hours == 168) ? hours : 0;
+        prefs.edit().putInt(KEY_AUTO_EXPIRE_TTL_HOURS, clean).apply();
+        markConfiguredAndBackup();
+    }
+
+    public long getLastAutoExpireRunMs() {
+        return prefs.getLong(KEY_LAST_AUTO_EXPIRE_MS, 0L);
+    }
+
+    public void setLastAutoExpireRunMs(long tsMs) {
+        prefs.edit().putLong(KEY_LAST_AUTO_EXPIRE_MS, tsMs).apply();
+    }
+
+    public boolean isAnonymousFilenameEnabled() {
+        return prefs.getBoolean(KEY_ANONYMOUS_FILENAME, false);
+    }
+
+    public void setAnonymousFilenameEnabled(boolean enabled) {
+        prefs.edit().putBoolean(KEY_ANONYMOUS_FILENAME, enabled).apply();
+        markConfiguredAndBackup();
+    }
+
+    public boolean isSecureOverlayEnabled() {
+        return prefs.getBoolean(KEY_SECURE_OVERLAY, false);
+    }
+
+    public void setSecureOverlayEnabled(boolean enabled) {
+        prefs.edit().putBoolean(KEY_SECURE_OVERLAY, enabled).apply();
+        markConfiguredAndBackup();
+    }
+
+    public String getCropAspectRatio() {
+        String r = prefs.getString(KEY_CROP_ASPECT_RATIO, "free");
+        if ("1:1".equals(r) || "4:5".equals(r) || "16:9".equals(r)) return r;
+        return "free";
+    }
+
+    public void setCropAspectRatio(String ratio) {
+        String clean = ("1:1".equals(ratio) || "4:5".equals(ratio) || "16:9".equals(ratio)) ? ratio : "free";
+        prefs.edit().putString(KEY_CROP_ASPECT_RATIO, clean).apply();
+        markConfiguredAndBackup();
+    }
+
     public long getLastBackupTimestampMs() {
         return prefs.getLong(KEY_LAST_BACKUP_TS, 0L);
     }
@@ -371,7 +503,7 @@ public class FoldShotPrefs {
     public String exportProfileJson() {
         try {
             JSONObject root = new JSONObject();
-            root.put("schema_version", 1);
+            root.put("schema_version", 2);
             root.put("app", "FoldShot");
             root.put("updated_at_ms", System.currentTimeMillis());
 
@@ -399,11 +531,22 @@ public class FoldShotPrefs {
 
             JSONObject editor = new JSONObject();
             editor.put("crop_mode", getCropMode());
+            editor.put("crop_aspect_ratio", getCropAspectRatio());
             editor.put("show_loupe", isLoupeEnabled());
             editor.put("magnetic_snap", isMagneticSnapEnabled());
             editor.put("preview_scale", (double) getPreviewScale());
             editor.put("dock_bottom_clearance_dp", (double) getDockBottomClearanceDp());
             root.put("editor", editor);
+
+            JSONObject privacy = new JSONObject();
+            privacy.put("vault_unlock_spot", getVaultUnlockSpot());
+            privacy.put("strip_metadata", isStripMetadataEnabled());
+            privacy.put("clipboard_auto_clear_sec", getClipboardAutoClearSec());
+            privacy.put("auto_expire_folder", getAutoExpireFolderName());
+            privacy.put("auto_expire_ttl_hours", getAutoExpireTtlHours());
+            privacy.put("anonymous_filename", isAnonymousFilenameEnabled());
+            privacy.put("secure_overlay", isSecureOverlayEnabled());
+            root.put("privacy", privacy);
 
             return root.toString(2);
         } catch (Exception e) {
@@ -415,7 +558,7 @@ public class FoldShotPrefs {
         if (rawJson == null || rawJson.trim().isEmpty()) return false;
         try {
             JSONObject root = new JSONObject(rawJson.trim());
-            boolean hasAnySection = root.has("folders") || root.has("triggers") || root.has("editor");
+            boolean hasAnySection = root.has("folders") || root.has("triggers") || root.has("editor") || root.has("privacy");
             if (!hasAnySection) return false;
 
             SharedPreferences.Editor ed = prefs.edit();
@@ -473,6 +616,12 @@ public class FoldShotPrefs {
                         ed.putString("crop_mode", mode);
                     }
                 }
+                if (editorObj.has("crop_aspect_ratio")) {
+                    String ratio = editorObj.optString("crop_aspect_ratio", "free");
+                    if ("free".equals(ratio) || "1:1".equals(ratio) || "4:5".equals(ratio) || "16:9".equals(ratio)) {
+                        ed.putString(KEY_CROP_ASPECT_RATIO, ratio);
+                    }
+                }
                 if (editorObj.has("show_loupe")) {
                     ed.putBoolean("show_loupe", editorObj.optBoolean("show_loupe", true));
                 }
@@ -486,6 +635,40 @@ public class FoldShotPrefs {
                 if (editorObj.has("dock_bottom_clearance_dp")) {
                     float dock = (float) editorObj.optDouble("dock_bottom_clearance_dp", 18.0);
                     ed.putFloat("dock_bottom_clearance_dp", Math.max(8f, Math.min(420f, dock)));
+                }
+            }
+
+            JSONObject privacyObj = root.optJSONObject("privacy");
+            if (privacyObj != null) {
+                if (privacyObj.has("vault_unlock_spot")) {
+                    String spot = privacyObj.optString("vault_unlock_spot", "summer_cat");
+                    if ("summer_cat".equals(spot) || "title".equals(spot) || "subtitle".equals(spot)
+                            || "system_header".equals(spot) || "profile_header".equals(spot)) {
+                        ed.putString(KEY_VAULT_UNLOCK_SPOT, spot);
+                    }
+                }
+                if (privacyObj.has("strip_metadata")) {
+                    ed.putBoolean(KEY_STRIP_METADATA, privacyObj.optBoolean("strip_metadata", true));
+                }
+                if (privacyObj.has("clipboard_auto_clear_sec")) {
+                    int sec = privacyObj.optInt("clipboard_auto_clear_sec", 0);
+                    ed.putInt(KEY_CLIPBOARD_AUTO_CLEAR_SEC, (sec == 30 || sec == 120 || sec == 300) ? sec : 0);
+                }
+                if (privacyObj.has("auto_expire_folder")) {
+                    String folder = privacyObj.optString("auto_expire_folder", "Temp").trim();
+                    if (!folder.isEmpty()) {
+                        ed.putString(KEY_AUTO_EXPIRE_FOLDER, folder);
+                    }
+                }
+                if (privacyObj.has("auto_expire_ttl_hours")) {
+                    int hrs = privacyObj.optInt("auto_expire_ttl_hours", 0);
+                    ed.putInt(KEY_AUTO_EXPIRE_TTL_HOURS, (hrs == 24 || hrs == 72 || hrs == 168) ? hrs : 0);
+                }
+                if (privacyObj.has("anonymous_filename")) {
+                    ed.putBoolean(KEY_ANONYMOUS_FILENAME, privacyObj.optBoolean("anonymous_filename", false));
+                }
+                if (privacyObj.has("secure_overlay")) {
+                    ed.putBoolean(KEY_SECURE_OVERLAY, privacyObj.optBoolean("secure_overlay", false));
                 }
             }
 

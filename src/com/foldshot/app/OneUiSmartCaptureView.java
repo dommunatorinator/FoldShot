@@ -8,9 +8,13 @@ import android.graphics.Canvas;
 import android.graphics.Color;
 import android.graphics.Paint;
 import android.graphics.Path;
+import android.graphics.PointF;
 import android.graphics.RectF;
 import android.graphics.Typeface;
 import android.os.Build;
+import android.os.Handler;
+import android.os.Looper;
+import android.os.SystemClock;
 import android.util.DisplayMetrics;
 import android.view.HapticFeedbackConstants;
 import android.view.MotionEvent;
@@ -31,6 +35,8 @@ import java.util.Set;
  * - Screenshot preview area (imgBounds) is scaled down inside the safe thumb zone (default 82%, adjustable 75% / 82% / 90%)
  *   so all 4 corner handles and edges are effortless to reach with one hand.
  * - Includes small Expand Folders button on the left of the 3 pinned albums to reveal all Gallery albums in 1 tap.
+ * - Inline Redact (blackout) & Highlight Pen tools + Aspect Ratio Lock pills.
+ * - Holding the minimize chevron inside Expanded Folders for 3 seconds saves privately to the Hidden Vault.
  * - 100% custom vector iconography (zero emojis).
  */
 public class OneUiSmartCaptureView extends View {
@@ -44,6 +50,7 @@ public class OneUiSmartCaptureView extends View {
         void onShare(RectF normalizedCrop);
         void onOpenSettings();
         void onCloseOverlay();
+        default void onSaveToHiddenFolder(RectF normalizedCrop) {}
         default void onDeviceConfigChanged() {}
     }
 
@@ -58,6 +65,11 @@ public class OneUiSmartCaptureView extends View {
             this.color = color;
         }
     }
+
+    private static final int TOOL_CROP = 0;
+    private static final int TOOL_REDACT = 1;
+    private static final int TOOL_PEN = 2;
+    private static final long HOLD_VAULT_MS = 3000L;
 
     private final FoldShotPrefs prefs;
     private final Listener listener;
@@ -80,6 +92,7 @@ public class OneUiSmartCaptureView extends View {
     private final RectF closeBtnRect = new RectF();
     private final RectF[] menuOptionRects = new RectF[]{new RectF(), new RectF(), new RectF(), new RectF()};
     private final RectF[] scaleOptionRects = new RectF[]{new RectF(), new RectF(), new RectF()};
+    private final RectF[] aspectOptionRects = new RectF[]{new RectF(), new RectF(), new RectF(), new RectF()};
     private final RectF[] albumPillRects = new RectF[]{new RectF(), new RectF(), new RectF()};
     private final RectF expandFoldersBtnRect = new RectF();
     private final RectF editAlbumsBtnRect = new RectF();
@@ -88,10 +101,24 @@ public class OneUiSmartCaptureView extends View {
     private final RectF copyDeleteBtnRect = new RectF();
     private final RectF shareBtnRect = new RectF();
 
-    // Expandable "More Folders" drawer rects & state
+    // Inline Redact / Pen / Undo tool pill rects & normalized markup history
+    private final RectF toolCropRect = new RectF();
+    private final RectF toolRedactRect = new RectF();
+    private final RectF toolPenRect = new RectF();
+    private final RectF toolUndoRect = new RectF();
+    private int activeTool = TOOL_CROP;
+    private final List<RectF> redactRects = new ArrayList<>();
+    private final List<List<PointF>> penStrokes = new ArrayList<>();
+    private final List<Integer> markupOrder = new ArrayList<>();
+    private RectF activeRedactDraft = null;
+    private List<PointF> activePenDraft = null;
+    private boolean isDrawingMarkup = false;
+
+    // Expandable "More Folders" drawer rects & state + 3-second hold minimize for Hidden Vault
     private final RectF folderDrawerRect = new RectF();
     private final RectF folderPrevPageRect = new RectF();
     private final RectF folderNextPageRect = new RectF();
+    private final RectF folderMinimizeBtnRect = new RectF();
     private final RectF folderManageLinkRect = new RectF();
     private final RectF[] drawerFolderPillRects = new RectF[]{
             new RectF(), new RectF(), new RectF(),
@@ -101,6 +128,33 @@ public class OneUiSmartCaptureView extends View {
     private final List<FolderChoice> cachedExtraFolders = new ArrayList<>();
     private boolean showMoreFoldersDrawer = false;
     private int folderDrawerPage = 0;
+
+    private final Handler vaultHoldHandler = new Handler(Looper.getMainLooper());
+    private boolean isHoldingMinimizeForVault = false;
+    private boolean vaultHoldTriggered = false;
+    private long vaultHoldStartMs = 0L;
+    private final RectF activeHoldTargetRect = new RectF();
+    private final Runnable vaultHoldTickRunnable = new Runnable() {
+        @Override
+        public void run() {
+            if (!isHoldingMinimizeForVault) return;
+            invalidate();
+            vaultHoldHandler.postDelayed(this, 32L);
+        }
+    };
+    private final Runnable vaultHoldRunnable = new Runnable() {
+        @Override
+        public void run() {
+            if (!isHoldingMinimizeForVault) return;
+            isHoldingMinimizeForVault = false;
+            vaultHoldTriggered = true;
+            vaultHoldHandler.removeCallbacks(vaultHoldTickRunnable);
+            showMoreFoldersDrawer = false;
+            performHapticFeedback(HapticFeedbackConstants.LONG_PRESS);
+            invalidate();
+            listener.onSaveToHiddenFolder(getNormalizedCrop());
+        }
+    };
 
     private boolean showCornerPopover = false;
     private boolean isDraggingCrop = false;
@@ -182,6 +236,12 @@ public class OneUiSmartCaptureView extends View {
 
     public void setScreenshotBitmap(Bitmap bmp) {
         this.screenshotBitmap = bmp;
+        redactRects.clear();
+        penStrokes.clear();
+        markupOrder.clear();
+        activeRedactDraft = null;
+        activePenDraft = null;
+        activeTool = TOOL_CROP;
         invalidate();
     }
 
@@ -189,15 +249,181 @@ public class OneUiSmartCaptureView extends View {
         return new RectF(crop);
     }
 
+    public boolean hasMarkups() {
+        return !redactRects.isEmpty() || !penStrokes.isEmpty();
+    }
+
+    public void undoLastMarkup() {
+        if (markupOrder.isEmpty()) return;
+        int last = markupOrder.remove(markupOrder.size() - 1);
+        if (last == TOOL_REDACT && !redactRects.isEmpty()) {
+            redactRects.remove(redactRects.size() - 1);
+        } else if (last == TOOL_PEN && !penStrokes.isEmpty()) {
+            penStrokes.remove(penStrokes.size() - 1);
+        }
+        invalidate();
+    }
+
+    /**
+     * Composites all inline Blackout Redact boxes and Highlight Pen strokes onto a full-resolution
+     * cropped target bitmap so redacted content is permanently erased in exported pixels.
+     */
+    public Bitmap renderMarkedCropBitmap(Bitmap croppedTarget, RectF normCrop) {
+        if (croppedTarget == null || !hasMarkups()) return croppedTarget;
+        RectF c = normCrop != null ? normCrop : new RectF(0f, 0f, 1f, 1f);
+        float cw = Math.max(0.001f, c.width());
+        float ch = Math.max(0.001f, c.height());
+
+        Bitmap mutable = croppedTarget;
+        if (!mutable.isMutable() || (Build.VERSION.SDK_INT >= 26 && mutable.getConfig() == Bitmap.Config.HARDWARE)) {
+            mutable = croppedTarget.copy(Bitmap.Config.ARGB_8888, true);
+        }
+        if (mutable == null) return croppedTarget;
+
+        int tw = mutable.getWidth();
+        int th = mutable.getHeight();
+        Canvas canvas = new Canvas(mutable);
+        Paint p = new Paint(Paint.ANTI_ALIAS_FLAG);
+
+        // Draw irreversible blackout redactions
+        p.setStyle(Paint.Style.FILL);
+        p.setColor(0xFF050507);
+        for (RectF r : redactRects) {
+            float l = ((r.left - c.left) / cw) * tw;
+            float t = ((r.top - c.top) / ch) * th;
+            float rt = ((r.right - c.left) / cw) * tw;
+            float b = ((r.bottom - c.top) / ch) * th;
+            canvas.drawRect(l, t, rt, b, p);
+        }
+
+        // Draw translucent yellow highlighter pen strokes
+        p.setStyle(Paint.Style.STROKE);
+        p.setColor(0x88FFE600);
+        p.setStrokeCap(Paint.Cap.ROUND);
+        p.setStrokeJoin(Paint.Join.ROUND);
+        p.setStrokeWidth(Math.max(5f, tw * 0.018f));
+        Path strokePath = new Path();
+        for (List<PointF> pts : penStrokes) {
+            if (pts == null || pts.size() < 2) continue;
+            strokePath.reset();
+            for (int i = 0; i < pts.size(); i++) {
+                float px = ((pts.get(i).x - c.left) / cw) * tw;
+                float py = ((pts.get(i).y - c.top) / ch) * th;
+                if (i == 0) strokePath.moveTo(px, py);
+                else strokePath.lineTo(px, py);
+            }
+            canvas.drawPath(strokePath, p);
+        }
+        return mutable;
+    }
+
     public void resetCrop() {
         crop.set(0f, 0f, 1f, 1f);
+        enforceAspectRatioOnCrop(4);
         invalidate();
+    }
+
+    private float getTargetAspectRatioValue() {
+        String ratio = prefs.getCropAspectRatio();
+        if ("1:1".equals(ratio)) return 1.0f;
+        if ("4:5".equals(ratio)) return 0.8f;
+        if ("16:9".equals(ratio)) return 16f / 9f;
+        return 0f;
+    }
+
+    private void enforceAspectRatioOnCrop(int anchorCorner) {
+        float targetRatio = getTargetAspectRatioValue();
+        if (targetRatio <= 0f || screenshotBitmap == null) return;
+        float imgW = Math.max(1f, screenshotBitmap.getWidth());
+        float imgH = Math.max(1f, screenshotBitmap.getHeight());
+        float imgAspect = imgW / imgH;
+        // (cropW * imgW) / (cropH * imgH) = targetRatio => cropW / cropH = targetRatio / imgAspect
+        float normRatio = targetRatio / imgAspect;
+        float wNorm = Math.max(0.05f, crop.width());
+        float hNorm = Math.max(0.05f, crop.height());
+
+        float newW = wNorm;
+        float newH = newW / normRatio;
+        if (newH > 1f) {
+            newH = 1f;
+            newW = Math.min(1f, newH * normRatio);
+        }
+        if (anchorCorner == 1) { // dragging TL -> anchor BR
+            float left = crop.right - newW;
+            float top = crop.bottom - newH;
+            if (left < 0f) {
+                left = 0f;
+                newW = crop.right;
+                newH = newW / normRatio;
+                top = crop.bottom - newH;
+            }
+            if (top < 0f) {
+                top = 0f;
+                newH = crop.bottom;
+                newW = newH * normRatio;
+                left = crop.right - newW;
+            }
+            crop.left = Math.max(0f, left);
+            crop.top = Math.max(0f, top);
+        } else if (anchorCorner == 2) { // dragging TR -> anchor BL
+            float right = crop.left + newW;
+            float top = crop.bottom - newH;
+            if (right > 1f) {
+                right = 1f;
+                newW = 1f - crop.left;
+                newH = newW / normRatio;
+                top = crop.bottom - newH;
+            }
+            if (top < 0f) {
+                top = 0f;
+                newH = crop.bottom;
+                newW = newH * normRatio;
+                right = crop.left + newW;
+            }
+            crop.right = Math.min(1f, right);
+            crop.top = Math.max(0f, top);
+        } else if (anchorCorner == 3) { // dragging BL -> anchor TR
+            float left = crop.right - newW;
+            float bottom = crop.top + newH;
+            if (left < 0f) {
+                left = 0f;
+                newW = crop.right;
+                newH = newW / normRatio;
+                bottom = crop.top + newH;
+            }
+            if (bottom > 1f) {
+                bottom = 1f;
+                newH = 1f - crop.top;
+                newW = newH * normRatio;
+                left = crop.right - newW;
+            }
+            crop.left = Math.max(0f, left);
+            crop.bottom = Math.min(1f, bottom);
+        } else { // anchor TL / center default
+            if (crop.left + newW > 1f) {
+                newW = 1f - crop.left;
+                newH = newW / normRatio;
+            }
+            if (crop.top + newH > 1f) {
+                newH = 1f - crop.top;
+                newW = newH * normRatio;
+            }
+            crop.right = Math.min(1f, crop.left + newW);
+            crop.bottom = Math.min(1f, crop.top + newH);
+        }
     }
 
     @Override
     protected void onAttachedToWindow() {
         super.onAttachedToWindow();
         updateDensityFromContext();
+    }
+
+    @Override
+    protected void onDetachedFromWindow() {
+        vaultHoldHandler.removeCallbacks(vaultHoldRunnable);
+        vaultHoldHandler.removeCallbacks(vaultHoldTickRunnable);
+        super.onDetachedFromWindow();
     }
 
     @Override
@@ -301,6 +527,43 @@ public class OneUiSmartCaptureView extends View {
 
             canvas.drawBitmap(screenshotBitmap, null, imgBounds, paint);
 
+            // Render inline Redact blackouts & Highlight pen strokes clipped to preview bounds
+            canvas.save();
+            canvas.clipRect(imgBounds);
+            paint.setStyle(Paint.Style.FILL);
+            paint.setColor(0xFF050507);
+            for (RectF rr : redactRects) {
+                canvas.drawRect(
+                        imgBounds.left + rr.left * imgBounds.width(),
+                        imgBounds.top + rr.top * imgBounds.height(),
+                        imgBounds.left + rr.right * imgBounds.width(),
+                        imgBounds.top + rr.bottom * imgBounds.height(),
+                        paint
+                );
+            }
+            if (activeRedactDraft != null) {
+                canvas.drawRect(
+                        imgBounds.left + activeRedactDraft.left * imgBounds.width(),
+                        imgBounds.top + activeRedactDraft.top * imgBounds.height(),
+                        imgBounds.left + activeRedactDraft.right * imgBounds.width(),
+                        imgBounds.top + activeRedactDraft.bottom * imgBounds.height(),
+                        paint
+                );
+            }
+
+            paint.setStyle(Paint.Style.STROKE);
+            paint.setColor(0x88FFE600);
+            paint.setStrokeCap(Paint.Cap.ROUND);
+            paint.setStrokeJoin(Paint.Join.ROUND);
+            paint.setStrokeWidth(Math.max(4f * dp, imgBounds.width() * 0.018f));
+            for (List<PointF> pts : penStrokes) {
+                drawNormPenStroke(canvas, pts);
+            }
+            if (activePenDraft != null) {
+                drawNormPenStroke(canvas, activePenDraft);
+            }
+            canvas.restore();
+
             float cx = imgBounds.left + crop.left * imgBounds.width();
             float cy = imgBounds.top + crop.top * imgBounds.height();
             float cr = imgBounds.left + crop.right * imgBounds.width();
@@ -353,7 +616,7 @@ public class OneUiSmartCaptureView extends View {
             canvas.restore();
         }
 
-        int hudAlpha = Math.round(((isDraggingCrop && hasMovedDuringTouch) ? 55 : 255) * entranceProgress);
+        int hudAlpha = Math.round((((isDraggingCrop || isDrawingMarkup) && hasMovedDuringTouch) ? 55 : 255) * entranceProgress);
 
         // 6. Floating Top Bar (Just below the status bar): Left = Mode & Scale Pill, Right = Reset, Settings, Close
         float topBarY = topOffset + 10f * dp;
@@ -520,9 +783,51 @@ public class OneUiSmartCaptureView extends View {
             canvas.drawCircle(lx, ly, r, paint);
         }
 
-        // 9. Top-Left Corner Dropdown Menu (Crop Mode + Live Preview Scale Switcher)
+        // 8b. Inline Tool Pill (Crop | Redact | Pen | Undo) when top-left popover is closed
+        if (!showCornerPopover) {
+            float toolBarTop = topBarY + 42f * dp;
+            float toolPillW = 196f * dp;
+            RectF toolContainer = new RectF(w - 14f * dp - toolPillW, toolBarTop, w - 14f * dp, toolBarTop + 30f * dp);
+            drawOneUiSurface(canvas, toolContainer, 15f * dp, hudAlpha);
+
+            float segW = (toolPillW - 12f * dp) / 4f;
+            RectF[] toolRects = new RectF[]{toolCropRect, toolRedactRect, toolPenRect, toolUndoRect};
+            String[] toolLabels = new String[]{"Crop", "Redact", "Pen", "Undo"};
+            for (int i = 0; i < 4; i++) {
+                float sl = toolContainer.left + 4f * dp + i * (segW + 1.3f * dp);
+                toolRects[i].set(sl, toolBarTop + 3f * dp, sl + segW, toolBarTop + 27f * dp);
+                boolean isSel = (i == activeTool);
+                boolean isUndoEnabled = (i == 3 && hasMarkups());
+                if (isSel) {
+                    paint.setStyle(Paint.Style.FILL);
+                    paint.setColor(i == 1
+                            ? Color.argb(Math.min(hudAlpha, 230), 220, 68, 68)
+                            : (i == 2
+                            ? Color.argb(Math.min(hudAlpha, 230), 204, 158, 0)
+                            : Color.argb(Math.min(hudAlpha, 230), 56, 122, 255)));
+                    canvas.drawRoundRect(toolRects[i], 12f * dp, 12f * dp, paint);
+                }
+                paint.setStyle(Paint.Style.FILL);
+                paint.setTypeface(isSel ? boldTypeface : mediumTypeface);
+                paint.setTextSize(10.2f * dp);
+                paint.setColor(isSel
+                        ? Color.argb(hudAlpha, 255, 255, 255)
+                        : (i == 3 && !isUndoEnabled
+                        ? Color.argb(Math.min(hudAlpha, 90), 160, 160, 170)
+                        : Color.argb(hudAlpha, 225, 225, 232)));
+                float lw = paint.measureText(toolLabels[i]);
+                canvas.drawText(toolLabels[i], toolRects[i].centerX() - lw / 2f, toolRects[i].centerY() + 3.5f * dp, paint);
+            }
+        } else {
+            toolCropRect.setEmpty();
+            toolRedactRect.setEmpty();
+            toolPenRect.setEmpty();
+            toolUndoRect.setEmpty();
+        }
+
+        // 9. Top-Left Corner Dropdown Menu (Crop Mode + Live Preview Scale + Aspect Ratio Lock)
         if (showCornerPopover) {
-            RectF popRect = new RectF(14f * dp, topBarY + 42f * dp, 240f * dp, topBarY + 276f * dp);
+            RectF popRect = new RectF(14f * dp, topBarY + 42f * dp, 244f * dp, topBarY + 340f * dp);
             drawOneUiSurface(canvas, popRect, 20f * dp, 255);
 
             String[] modes = new String[]{"auto", "point-drag", "center-expand", "pinch-spread"};
@@ -581,6 +886,38 @@ public class OneUiSmartCaptureView extends View {
                 float tw = paint.measureText(sLabels[i]);
                 canvas.drawText(sLabels[i], scaleOptionRects[i].centerX() - tw / 2f, scaleOptionRects[i].centerY() + 4f * dp, paint);
             }
+
+            // Aspect Ratio Lock Row ("Free | 1:1 | 4:5 | 16:9")
+            float divY2 = pillTop + 38f * dp;
+            paint.setStyle(Paint.Style.FILL);
+            paint.setColor(0xFF26262B);
+            canvas.drawRect(popRect.left + 12f * dp, divY2, popRect.right - 12f * dp, divY2 + 1f * dp, paint);
+
+            paint.setColor(0xFF8E8E93);
+            paint.setTypeface(mediumTypeface);
+            paint.setTextSize(10.5f * dp);
+            canvas.drawText("Aspect Ratio Lock", popRect.left + 14f * dp, divY2 + 17f * dp, paint);
+
+            String[] arKeys = new String[]{"free", "1:1", "4:5", "16:9"};
+            String[] arLabels = new String[]{"Free", "1:1", "4:5", "16:9"};
+            String curAr = prefs.getCropAspectRatio();
+            float arPillW = (popRect.width() - 32f * dp) / 4f;
+            float arPillTop = divY2 + 24f * dp;
+
+            for (int i = 0; i < 4; i++) {
+                float al = popRect.left + 10f * dp + i * (arPillW + 4f * dp);
+                aspectOptionRects[i].set(al, arPillTop, al + arPillW, arPillTop + 28f * dp);
+                boolean sel = arKeys[i].equals(curAr);
+                paint.setStyle(Paint.Style.FILL);
+                paint.setColor(sel ? 0xFF387AFF : 0xFF252529);
+                canvas.drawRoundRect(aspectOptionRects[i], 10f * dp, 10f * dp, paint);
+
+                paint.setColor(sel ? Color.WHITE : 0xFFA1A1AA);
+                paint.setTypeface(sel ? boldTypeface : mediumTypeface);
+                paint.setTextSize(10.8f * dp);
+                float tw = paint.measureText(arLabels[i]);
+                canvas.drawText(arLabels[i], aspectOptionRects[i].centerX() - tw / 2f, aspectOptionRects[i].centerY() + 3.8f * dp, paint);
+            }
         }
 
         // 10. Expandable "More Folders" Floating Drawer above Row A (toggled by expandFoldersBtnRect)
@@ -612,7 +949,7 @@ public class OneUiSmartCaptureView extends View {
             );
             drawOneUiSurface(canvas, folderDrawerRect, 20f * dp, 255);
 
-            // Header: "More Folders" (or "Visible Folders") + "Manage" badge
+            // Header: "More Folders" (or "Visible Folders") + "Manage" badge + Minimize chevron button
             paint.setStyle(Paint.Style.FILL);
             paint.setTypeface(boldTypeface);
             paint.setColor(0xFFF5F5F7);
@@ -638,6 +975,35 @@ public class OneUiSmartCaptureView extends View {
             String manageLbl = prefs.isFolderAllowlistEnabled() ? "Select Folders" : "Edit Top 3";
             float mlw = paint.measureText(manageLbl);
             canvas.drawText(manageLbl, folderManageLinkRect.centerX() - mlw / 2f, folderManageLinkRect.centerY() + 3.6f * dp, paint);
+
+            folderMinimizeBtnRect.set(
+                    folderManageLinkRect.left - 30f * dp,
+                    folderDrawerRect.top + 8f * dp,
+                    folderManageLinkRect.left - 6f * dp,
+                    folderDrawerRect.top + 30f * dp
+            );
+            paint.setStyle(Paint.Style.FILL);
+            paint.setColor(0xFF26262C);
+            canvas.drawRoundRect(folderMinimizeBtnRect, 11f * dp, 11f * dp, paint);
+            drawChevronDown(canvas, folderMinimizeBtnRect.centerX(), folderMinimizeBtnRect.centerY(), 3.6f * dp, 0xFFD4D4DC);
+
+            if (isHoldingMinimizeForVault) {
+                float elapsed = Math.max(0f, SystemClock.uptimeMillis() - vaultHoldStartMs);
+                float frac = Math.min(1f, elapsed / (float) HOLD_VAULT_MS);
+                if (frac > 0.08f) {
+                    paint.setStyle(Paint.Style.STROKE);
+                    paint.setStrokeWidth(2.0f * dp);
+                    paint.setStrokeCap(Paint.Cap.ROUND);
+                    paint.setColor(0xFF5C95FF);
+                    RectF ring = new RectF(
+                            activeHoldTargetRect.left - 2f * dp,
+                            activeHoldTargetRect.top - 2f * dp,
+                            activeHoldTargetRect.right + 2f * dp,
+                            activeHoldTargetRect.bottom + 2f * dp
+                    );
+                    canvas.drawArc(ring, -90f, 360f * frac, false, paint);
+                }
+            }
 
             // Grid of 3 columns x up to 3 rows
             float gridLeft = folderDrawerRect.left + 12f * dp;
@@ -1008,6 +1374,63 @@ public class OneUiSmartCaptureView extends View {
         canvas.drawCircle(cx + s * 0.55f, cy + s * 0.6f, 2.4f * dp, paint);
     }
 
+    private void drawNormPenStroke(Canvas canvas, List<PointF> pts) {
+        if (pts == null || pts.size() < 2) return;
+        path.reset();
+        for (int i = 0; i < pts.size(); i++) {
+            float sx = imgBounds.left + pts.get(i).x * imgBounds.width();
+            float sy = imgBounds.top + pts.get(i).y * imgBounds.height();
+            if (i == 0) path.moveTo(sx, sy);
+            else path.lineTo(sx, sy);
+        }
+        canvas.drawPath(path, paint);
+    }
+
+    private void startVaultHoldTimer(RectF targetRect) {
+        cancelVaultHoldTimer();
+        isHoldingMinimizeForVault = true;
+        vaultHoldTriggered = false;
+        vaultHoldStartMs = SystemClock.uptimeMillis();
+        activeHoldTargetRect.set(targetRect);
+        performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK);
+        vaultHoldHandler.postDelayed(vaultHoldRunnable, HOLD_VAULT_MS);
+        vaultHoldHandler.postDelayed(vaultHoldTickRunnable, 32L);
+        invalidate();
+    }
+
+    private void cancelVaultHoldTimer() {
+        isHoldingMinimizeForVault = false;
+        vaultHoldHandler.removeCallbacks(vaultHoldRunnable);
+        vaultHoldHandler.removeCallbacks(vaultHoldTickRunnable);
+        invalidate();
+    }
+
+    private boolean isOverControlButton(float x, float y) {
+        if (cornerModeBtnRect.contains(x, y)
+                || settingsBtnRect.contains(x, y)
+                || resetBtnRect.contains(x, y)
+                || saveScreenshotBtnRect.contains(x, y)
+                || closeBtnRect.contains(x, y)
+                || expandFoldersBtnRect.contains(x, y)
+                || editAlbumsBtnRect.contains(x, y)
+                || dragDockHandleRect.contains(x, y)
+                || scrollCaptureBtnRect.contains(x, y)
+                || copyDeleteBtnRect.contains(x, y)
+                || shareBtnRect.contains(x, y)
+                || toolCropRect.contains(x, y)
+                || toolRedactRect.contains(x, y)
+                || toolPenRect.contains(x, y)
+                || toolUndoRect.contains(x, y)) {
+            return true;
+        }
+        for (int i = 0; i < 3; i++) {
+            if (!albumPillRects[i].isEmpty() && albumPillRects[i].contains(x, y)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
     private String getCropModeShortLabel(String mode) {
         if ("point-drag".equals(mode)) return "Corner";
         if ("center-expand".equals(mode)) return "Center";
@@ -1030,6 +1453,14 @@ public class OneUiSmartCaptureView extends View {
 
     private float toNormY(float sy) {
         return snapVal((sy - imgBounds.top) / Math.max(1f, imgBounds.height()));
+    }
+
+    private float toRawNormX(float sx) {
+        return Math.max(0f, Math.min(1f, (sx - imgBounds.left) / Math.max(1f, imgBounds.width())));
+    }
+
+    private float toRawNormY(float sy) {
+        return Math.max(0f, Math.min(1f, (sy - imgBounds.top) / Math.max(1f, imgBounds.height())));
     }
 
     private int detectCornerHandle(float x, float y) {
@@ -1097,6 +1528,33 @@ public class OneUiSmartCaptureView extends View {
             listener.onShare(getNormalizedCrop());
             return true;
         }
+        if (!toolCropRect.isEmpty()) {
+            if (toolCropRect.contains(x, y)) {
+                activeTool = TOOL_CROP;
+                performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK);
+                invalidate();
+                return true;
+            }
+            if (toolRedactRect.contains(x, y)) {
+                activeTool = TOOL_REDACT;
+                performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK);
+                invalidate();
+                return true;
+            }
+            if (toolPenRect.contains(x, y)) {
+                activeTool = TOOL_PEN;
+                performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK);
+                invalidate();
+                return true;
+            }
+            if (toolUndoRect.contains(x, y)) {
+                if (hasMarkups()) {
+                    undoLastMarkup();
+                    performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK);
+                }
+                return true;
+            }
+        }
         String[] albums = prefs.resolveTopThreeAlbums();
         for (int i = 0; i < 3; i++) {
             if (!albumPillRects[i].isEmpty() && albumPillRects[i].contains(x, y) && prefs.isFolderUsable(albums[i])) {
@@ -1117,6 +1575,7 @@ public class OneUiSmartCaptureView extends View {
         if (action == MotionEvent.ACTION_DOWN) {
             downScreenX = x;
             downScreenY = y;
+            vaultHoldTriggered = false;
 
             if (showCornerPopover) {
                 String[] modes = new String[]{"auto", "point-drag", "center-expand", "pinch-spread"};
@@ -1139,12 +1598,31 @@ public class OneUiSmartCaptureView extends View {
                         return true;
                     }
                 }
+                String[] ratios = new String[]{"free", "1:1", "4:5", "16:9"};
+                for (int i = 0; i < 4; i++) {
+                    if (aspectOptionRects[i].contains(x, y)) {
+                        prefs.setCropAspectRatio(ratios[i]);
+                        enforceAspectRatioOnCrop(4);
+                        showCornerPopover = false;
+                        performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK);
+                        invalidate();
+                        return true;
+                    }
+                }
                 showCornerPopover = false;
                 invalidate();
                 return true;
             }
 
             if (showMoreFoldersDrawer) {
+                if (folderMinimizeBtnRect.contains(x, y)) {
+                    startVaultHoldTimer(folderMinimizeBtnRect);
+                    return true;
+                }
+                if (expandFoldersBtnRect.contains(x, y)) {
+                    startVaultHoldTimer(expandFoldersBtnRect);
+                    return true;
+                }
                 int startIdx = folderDrawerPage * 9;
                 for (int i = 0; i < 9; i++) {
                     if (drawerFolderPillRects[i].contains(x, y) && (startIdx + i) < cachedExtraFolders.size()) {
@@ -1174,12 +1652,6 @@ public class OneUiSmartCaptureView extends View {
                     listener.onOpenSettings();
                     return true;
                 }
-                if (expandFoldersBtnRect.contains(x, y)) {
-                    showMoreFoldersDrawer = false;
-                    performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK);
-                    invalidate();
-                    return true;
-                }
                 String[] albums = prefs.resolveTopThreeAlbums();
                 for (int i = 0; i < 3; i++) {
                     if (!albumPillRects[i].isEmpty() && albumPillRects[i].contains(x, y) && prefs.isFolderUsable(albums[i])) {
@@ -1202,6 +1674,53 @@ public class OneUiSmartCaptureView extends View {
                 return true;
             }
 
+            if (!toolCropRect.isEmpty()) {
+                if (toolCropRect.contains(x, y)) {
+                    activeTool = TOOL_CROP;
+                    performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK);
+                    invalidate();
+                    return true;
+                }
+                if (toolRedactRect.contains(x, y)) {
+                    activeTool = TOOL_REDACT;
+                    performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK);
+                    invalidate();
+                    return true;
+                }
+                if (toolPenRect.contains(x, y)) {
+                    activeTool = TOOL_PEN;
+                    performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK);
+                    invalidate();
+                    return true;
+                }
+                if (toolUndoRect.contains(x, y)) {
+                    if (hasMarkups()) {
+                        undoLastMarkup();
+                        performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK);
+                    }
+                    return true;
+                }
+            }
+
+            if ((activeTool == TOOL_REDACT || activeTool == TOOL_PEN)
+                    && !isOverControlButton(x, y)
+                    && imgBounds.contains(x, y)) {
+                isDrawingMarkup = true;
+                hasMovedDuringTouch = false;
+                float rnx = toRawNormX(x);
+                float rny = toRawNormY(y);
+                anchorNormX = rnx;
+                anchorNormY = rny;
+                if (activeTool == TOOL_REDACT) {
+                    activeRedactDraft = new RectF(rnx, rny, rnx, rny);
+                } else {
+                    activePenDraft = new ArrayList<>();
+                    activePenDraft.add(new PointF(rnx, rny));
+                }
+                invalidate();
+                return true;
+            }
+
             isDraggingCrop = true;
             hasMovedDuringTouch = false;
             touchScreenX = x;
@@ -1213,9 +1732,41 @@ public class OneUiSmartCaptureView extends View {
             return true;
         }
 
+        if (action == MotionEvent.ACTION_MOVE && isHoldingMinimizeForVault) {
+            float slop = 16f * dp;
+            if (x < activeHoldTargetRect.left - slop || x > activeHoldTargetRect.right + slop
+                    || y < activeHoldTargetRect.top - slop || y > activeHoldTargetRect.bottom + slop) {
+                cancelVaultHoldTimer();
+            }
+            return true;
+        }
+
         if (action == MotionEvent.ACTION_MOVE && isDraggingDockHeight) {
             float deltaDp = (dragStartY - y) / dp;
             prefs.setDockBottomClearanceDp(initialClearanceDp + deltaDp);
+            invalidate();
+            return true;
+        }
+
+        if (action == MotionEvent.ACTION_MOVE && isDrawingMarkup) {
+            if (Math.hypot(x - downScreenX, y - downScreenY) > 6f * dp) {
+                hasMovedDuringTouch = true;
+            }
+            float rnx = toRawNormX(x);
+            float rny = toRawNormY(y);
+            if (activeTool == TOOL_REDACT && activeRedactDraft != null) {
+                activeRedactDraft.set(
+                        Math.min(anchorNormX, rnx),
+                        Math.min(anchorNormY, rny),
+                        Math.max(anchorNormX, rnx),
+                        Math.max(anchorNormY, rny)
+                );
+            } else if (activeTool == TOOL_PEN && activePenDraft != null) {
+                PointF last = activePenDraft.isEmpty() ? null : activePenDraft.get(activePenDraft.size() - 1);
+                if (last == null || Math.hypot(rnx - last.x, rny - last.y) > 0.004f) {
+                    activePenDraft.add(new PointF(rnx, rny));
+                }
+            }
             invalidate();
             return true;
         }
@@ -1238,6 +1789,7 @@ public class OneUiSmartCaptureView extends View {
                 crop.top = Math.min(y1, y2);
                 crop.bottom = Math.max(y1, y2);
                 if (crop.bottom - crop.top < 0.05f) crop.bottom = Math.min(1f, crop.top + 0.05f);
+                enforceAspectRatioOnCrop(4);
                 invalidate();
                 return true;
             }
@@ -1280,11 +1832,55 @@ public class OneUiSmartCaptureView extends View {
                 crop.bottom = Math.max(anchorNormY, ny);
                 if (crop.bottom - crop.top < 0.05f) crop.bottom = Math.min(1f, crop.top + 0.05f);
             }
+            enforceAspectRatioOnCrop(activeHandle > 0 ? activeHandle : 4);
             invalidate();
             return true;
         }
 
         if (action == MotionEvent.ACTION_UP || action == MotionEvent.ACTION_CANCEL) {
+            if (isHoldingMinimizeForVault) {
+                float slop = 16f * dp;
+                boolean wasStillInside = x >= activeHoldTargetRect.left - slop
+                        && x <= activeHoldTargetRect.right + slop
+                        && y >= activeHoldTargetRect.top - slop
+                        && y <= activeHoldTargetRect.bottom + slop;
+                cancelVaultHoldTimer();
+                if (action == MotionEvent.ACTION_UP && !vaultHoldTriggered && wasStillInside) {
+                    showMoreFoldersDrawer = false;
+                    performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK);
+                    invalidate();
+                }
+                vaultHoldTriggered = false;
+                return true;
+            }
+            if (vaultHoldTriggered) {
+                vaultHoldTriggered = false;
+                return true;
+            }
+            if (isDrawingMarkup) {
+                if (action == MotionEvent.ACTION_UP) {
+                    if (activeTool == TOOL_REDACT && activeRedactDraft != null) {
+                        if (activeRedactDraft.width() > 0.01f && activeRedactDraft.height() > 0.01f) {
+                            redactRects.add(new RectF(activeRedactDraft));
+                            markupOrder.add(TOOL_REDACT);
+                            performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK);
+                        }
+                    } else if (activeTool == TOOL_PEN && activePenDraft != null) {
+                        if (activePenDraft.size() >= 2) {
+                            penStrokes.add(new ArrayList<>(activePenDraft));
+                            markupOrder.add(TOOL_PEN);
+                            performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK);
+                        }
+                    }
+                }
+                activeRedactDraft = null;
+                activePenDraft = null;
+                isDrawingMarkup = false;
+                hasMovedDuringTouch = false;
+                invalidate();
+                return true;
+            }
+
             boolean wasTap = !hasMovedDuringTouch && !isDraggingDockHeight && action == MotionEvent.ACTION_UP;
             isDraggingCrop = false;
             isDraggingDockHeight = false;

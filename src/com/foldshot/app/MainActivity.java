@@ -14,13 +14,19 @@ import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
 import android.provider.Settings;
+import android.text.InputFilter;
+import android.text.InputType;
+import android.text.method.PasswordTransformationMethod;
 import android.util.TypedValue;
 import android.view.Gravity;
+import android.view.HapticFeedbackConstants;
 import android.view.View;
 import android.view.ViewGroup;
 import android.view.ViewTreeObserver;
+import android.view.WindowManager;
 import android.widget.EditText;
 import android.widget.HorizontalScrollView;
+import android.widget.ImageView;
 import android.widget.LinearLayout;
 import android.widget.ScrollView;
 import android.widget.Switch;
@@ -239,7 +245,7 @@ public class MainActivity extends Activity {
         rootContent.addView(testBtn, testLp);
 
         // 2. Section: SYSTEM PERMISSIONS & DEVICE INTEGRATION
-        addSectionHeader("SYSTEM INTEGRATION");
+        TextView systemHeaderView = addSectionHeader("SYSTEM INTEGRATION");
         LinearLayout permCard = createOneUiCard();
 
         MediaStoreHelper.PhotoAccessState photoState = MediaStoreHelper.getPhotoAccessState(this);
@@ -334,7 +340,7 @@ public class MainActivity extends Activity {
         rootContent.addView(permCard);
 
         // 2a. Section: SETTINGS PROFILE (Survives APK Uninstall / Reinstall Updates)
-        addSectionHeader("SETTINGS PROFILE (BACKUP & RESTORE)");
+        TextView profileHeaderView = addSectionHeader("SETTINGS PROFILE (BACKUP & RESTORE)");
         LinearLayout profileCard = createOneUiCard();
         boolean hasConfiguredProfile = prefs.hasUserConfiguredProfile();
         String profileSummary = prefs.getProfileSummaryLine();
@@ -712,6 +718,259 @@ public class MainActivity extends Activity {
 
         rootContent.addView(cropCard);
 
+        // 5. Section: PRIVACY, VAULT & MARKUP (100% Offline)
+        addSectionHeader("PRIVACY, VAULT & MARKUP");
+        LinearLayout privacyCard = createOneUiCard();
+
+        String curSpot = prefs.getVaultUnlockSpot();
+        privacyCard.addView(createPermissionRow(
+                prefs.hasVaultPin() ? "Change Hidden Vault PIN" : "Set Hidden Vault PIN",
+                "Hold minimize chevron (⌄) in More Folders for 3s to hide a shot • Open by long-pressing "
+                        + getUnlockSpotLabel(curSpot),
+                prefs.hasVaultPin() ? "Active" : "Set PIN",
+                prefs.hasVaultPin(),
+                v -> showSetOrChangeVaultPinDialog(false)
+        ));
+        privacyCard.addView(createDivider());
+
+        // Custom Vault Long-Press Access Spot selector (discreet trigger only)
+        LinearLayout spotBox = new LinearLayout(this);
+        spotBox.setOrientation(LinearLayout.VERTICAL);
+        spotBox.setPadding(dpInt(18), dpInt(16), dpInt(18), dpInt(16));
+
+        TextView spotTitle = new TextView(this);
+        spotTitle.setText("Hidden Vault Long-Press Spot");
+        spotTitle.setTextColor(0xFFF5F5F7);
+        spotTitle.setTextSize(TypedValue.COMPLEX_UNIT_SP, 15);
+        spotTitle.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL));
+        spotBox.addView(spotTitle);
+
+        TextView spotSub = new TextView(this);
+        spotSub.setText("Long-press your chosen element + enter PIN to unlock your encrypted Hidden Vault");
+        spotSub.setTextColor(0xFF8E8E93);
+        spotSub.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12);
+        spotBox.addView(spotSub);
+
+        LinearLayout spotRow = new LinearLayout(this);
+        spotRow.setOrientation(LinearLayout.HORIZONTAL);
+        LinearLayout.LayoutParams spotRowLp = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT
+        );
+        spotRowLp.topMargin = dpInt(10);
+
+        String[] spotKeys = new String[]{"summer_cat", "title", "subtitle", "system_header", "profile_header"};
+        String[] spotLabels = new String[]{"Summer", "Title", "Subtitle", "System", "Profile"};
+        for (int i = 0; i < 5; i++) {
+            final String key = spotKeys[i];
+            boolean sel = key.equals(curSpot);
+            TextView pill = new TextView(this);
+            pill.setText(spotLabels[i]);
+            pill.setGravity(Gravity.CENTER);
+            pill.setTextSize(TypedValue.COMPLEX_UNIT_SP, 11);
+            pill.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL));
+            pill.setTextColor(sel ? Color.WHITE : 0xFFA1A1AA);
+            pill.setPadding(0, dpInt(8), 0, dpInt(8));
+            pill.setBackground(roundedRect(sel ? 0xFF387AFF : 0xFF252529, 14f, 0, 0));
+            pill.setOnClickListener(v -> {
+                prefs.setVaultUnlockSpot(key);
+                buildOneUiSettingsScreen();
+            });
+            LinearLayout.LayoutParams plp = new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f);
+            if (i < 4) plp.rightMargin = dpInt(5);
+            spotRow.addView(pill, plp);
+        }
+        spotBox.addView(spotRow, spotRowLp);
+        privacyCard.addView(spotBox);
+        privacyCard.addView(createDivider());
+
+        privacyCard.addView(createSwitchRow(
+                "Strip EXIF & GPS metadata",
+                "Automatically removes location, camera model & capture tags from saved/moved/hidden JPEGs",
+                prefs.isStripMetadataEnabled(),
+                checked -> prefs.setStripMetadataEnabled(checked)
+        ));
+        privacyCard.addView(createDivider());
+
+        // Auto-Clear Clipboard timer selector
+        LinearLayout clipBox = new LinearLayout(this);
+        clipBox.setOrientation(LinearLayout.VERTICAL);
+        clipBox.setPadding(dpInt(18), dpInt(16), dpInt(18), dpInt(16));
+
+        TextView clipTitle = new TextView(this);
+        clipTitle.setText("Auto-Clear Clipboard");
+        clipTitle.setTextColor(0xFFF5F5F7);
+        clipTitle.setTextSize(TypedValue.COMPLEX_UNIT_SP, 15);
+        clipTitle.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL));
+        clipBox.addView(clipTitle);
+
+        TextView clipSub = new TextView(this);
+        clipSub.setText("Automatically clears copied screenshot from clipboard and temp cache");
+        clipSub.setTextColor(0xFF8E8E93);
+        clipSub.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12);
+        clipBox.addView(clipSub);
+
+        LinearLayout clipRow = new LinearLayout(this);
+        clipRow.setOrientation(LinearLayout.HORIZONTAL);
+        LinearLayout.LayoutParams clipRowLp = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT
+        );
+        clipRowLp.topMargin = dpInt(10);
+
+        int curClipSec = prefs.getClipboardAutoClearSec();
+        int[] clipSecs = new int[]{0, 30, 120, 300};
+        String[] clipLabels = new String[]{"Off", "30s", "2m", "5m"};
+        for (int i = 0; i < 4; i++) {
+            final int secVal = clipSecs[i];
+            boolean sel = curClipSec == secVal;
+            TextView pill = new TextView(this);
+            pill.setText(clipLabels[i]);
+            pill.setGravity(Gravity.CENTER);
+            pill.setTextSize(TypedValue.COMPLEX_UNIT_SP, 11.5f);
+            pill.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL));
+            pill.setTextColor(sel ? Color.WHITE : 0xFFA1A1AA);
+            pill.setPadding(0, dpInt(8), 0, dpInt(8));
+            pill.setBackground(roundedRect(sel ? 0xFF387AFF : 0xFF252529, 14f, 0, 0));
+            pill.setOnClickListener(v -> {
+                prefs.setClipboardAutoClearSec(secVal);
+                buildOneUiSettingsScreen();
+            });
+            LinearLayout.LayoutParams clp = new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f);
+            if (i < 3) clp.rightMargin = dpInt(6);
+            clipRow.addView(pill, clp);
+        }
+        clipBox.addView(clipRow, clipRowLp);
+        privacyCard.addView(clipBox);
+        privacyCard.addView(createDivider());
+
+        // Self-Destructing / Auto-Expire Folder selector
+        LinearLayout expBox = new LinearLayout(this);
+        expBox.setOrientation(LinearLayout.VERTICAL);
+        expBox.setPadding(dpInt(18), dpInt(16), dpInt(18), dpInt(16));
+
+        TextView expTitle = new TextView(this);
+        expTitle.setText("Self-Destructing Temp Folder");
+        expTitle.setTextColor(0xFFF5F5F7);
+        expTitle.setTextSize(TypedValue.COMPLEX_UNIT_SP, 15);
+        expTitle.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL));
+        expBox.addView(expTitle);
+
+        String expFolder = prefs.getAutoExpireFolderName();
+        int curTtlHours = prefs.getAutoExpireTtlHours();
+        TextView expSub = new TextView(this);
+        expSub.setText("Auto-deletes shots inside '" + expFolder + "' after the chosen TTL");
+        expSub.setTextColor(0xFF8E8E93);
+        expSub.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12);
+        expBox.addView(expSub);
+
+        LinearLayout expRow = new LinearLayout(this);
+        expRow.setOrientation(LinearLayout.HORIZONTAL);
+        LinearLayout.LayoutParams expRowLp = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT
+        );
+        expRowLp.topMargin = dpInt(10);
+
+        int[] ttlVals = new int[]{0, 24, 72, 168};
+        String[] ttlLabels = new String[]{"Off", "24h", "3d", "7d"};
+        for (int i = 0; i < 4; i++) {
+            final int hVal = ttlVals[i];
+            boolean sel = curTtlHours == hVal;
+            TextView pill = new TextView(this);
+            pill.setText(ttlLabels[i]);
+            pill.setGravity(Gravity.CENTER);
+            pill.setTextSize(TypedValue.COMPLEX_UNIT_SP, 11.5f);
+            pill.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL));
+            pill.setTextColor(sel ? Color.WHITE : 0xFFA1A1AA);
+            pill.setPadding(0, dpInt(8), 0, dpInt(8));
+            pill.setBackground(roundedRect(sel ? 0xFF387AFF : 0xFF252529, 14f, 0, 0));
+            pill.setOnClickListener(v -> {
+                prefs.setAutoExpireTtlHours(hVal);
+                buildOneUiSettingsScreen();
+            });
+            LinearLayout.LayoutParams elp = new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f);
+            if (i < 3) elp.rightMargin = dpInt(6);
+            expRow.addView(pill, elp);
+        }
+        expBox.addView(expRow, expRowLp);
+        privacyCard.addView(expBox);
+        privacyCard.addView(createDivider());
+
+        privacyCard.addView(createPermissionRow(
+                "Auto-expire folder: " + expFolder,
+                curTtlHours > 0 ? "Tap to rename folder or clean expired items" : "Set which Gallery album auto-expires when enabled",
+                curTtlHours > 0 ? "Clean" : "Edit",
+                curTtlHours > 0,
+                v -> showEditAutoExpireFolderDialog()
+        ));
+        privacyCard.addView(createDivider());
+
+        privacyCard.addView(createSwitchRow(
+                "Anonymous filenames (IMG_...)",
+                "Names saved & clipboard screenshots IMG_yyyyMMdd_HHmmss_SSS instead of FoldShot_",
+                prefs.isAnonymousFilenameEnabled(),
+                checked -> prefs.setAnonymousFilenameEnabled(checked)
+        ));
+        privacyCard.addView(createDivider());
+
+        privacyCard.addView(createSwitchRow(
+                "Privacy overlay & auto-hide on lock",
+                "Adds FLAG_SECURE against screen capture and auto-dismisses overlay on screen lock",
+                prefs.isSecureOverlayEnabled(),
+                checked -> prefs.setSecureOverlayEnabled(checked)
+        ));
+        rootContent.addView(privacyCard);
+
+        // 6. Bottom Summer Cat Anchor (Transparent cutout PNG + "Summer" next to his picture)
+        LinearLayout summerContainer = new LinearLayout(this);
+        summerContainer.setOrientation(LinearLayout.HORIZONTAL);
+        summerContainer.setGravity(Gravity.CENTER);
+        summerContainer.setPadding(dpInt(20), dpInt(12), dpInt(20), dpInt(12));
+
+        ImageView summerImg = new ImageView(this);
+        summerImg.setImageResource(R.drawable.summer_cat);
+        summerImg.setAdjustViewBounds(true);
+        summerImg.setScaleType(ImageView.ScaleType.FIT_CENTER);
+        LinearLayout.LayoutParams imgLp = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT, dpInt(78)
+        );
+        summerContainer.addView(summerImg, imgLp);
+
+        TextView summerName = new TextView(this);
+        summerName.setText("Summer");
+        summerName.setTextColor(0xFFA1A1AA);
+        summerName.setTextSize(TypedValue.COMPLEX_UNIT_SP, 15);
+        summerName.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL));
+        LinearLayout.LayoutParams nameLp = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT
+        );
+        nameLp.leftMargin = dpInt(10);
+        summerContainer.addView(summerName, nameLp);
+
+        LinearLayout.LayoutParams summerLp = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT
+        );
+        summerLp.gravity = Gravity.CENTER_HORIZONTAL;
+        summerLp.topMargin = dpInt(24);
+        summerLp.bottomMargin = dpInt(6);
+        rootContent.addView(summerContainer, summerLp);
+
+        // Wire hidden long-press unlock listener strictly to the user's selected spot
+        View.OnLongClickListener vaultSpotListener = v -> {
+            v.performHapticFeedback(HapticFeedbackConstants.LONG_PRESS);
+            handleVaultSpotLongPress();
+            return true;
+        };
+        if ("title".equals(curSpot)) {
+            titleView.setOnLongClickListener(vaultSpotListener);
+        } else if ("subtitle".equals(curSpot)) {
+            subView.setOnLongClickListener(vaultSpotListener);
+        } else if ("system_header".equals(curSpot)) {
+            systemHeaderView.setOnLongClickListener(vaultSpotListener);
+        } else if ("profile_header".equals(curSpot)) {
+            profileHeaderView.setOnLongClickListener(vaultSpotListener);
+        } else {
+            summerContainer.setOnLongClickListener(vaultSpotListener);
+        }
+
         final int targetScrollY = savedScrollY;
         final ViewTreeObserver vto = scrollView.getViewTreeObserver();
         if (pendingScrollListener != null && vto.isAlive()) {
@@ -736,7 +995,7 @@ public class MainActivity extends Activity {
         });
     }
 
-    private void addSectionHeader(String title) {
+    private TextView addSectionHeader(String title) {
         TextView tv = new TextView(this);
         tv.setText(title);
         tv.setTextColor(0xFF8E8E93);
@@ -749,6 +1008,175 @@ public class MainActivity extends Activity {
         lp.topMargin = dpInt(18);
         lp.bottomMargin = dpInt(8);
         rootContent.addView(tv, lp);
+        return tv;
+    }
+
+    private String getUnlockSpotLabel(String spot) {
+        if ("title".equals(spot)) return "FoldShot Title";
+        if ("subtitle".equals(spot)) return "Subtitle";
+        if ("system_header".equals(spot)) return "SYSTEM INTEGRATION";
+        if ("profile_header".equals(spot)) return "SETTINGS PROFILE";
+        return "Summer";
+    }
+
+    private void handleVaultSpotLongPress() {
+        if (!prefs.hasVaultPin()) {
+            showSetOrChangeVaultPinDialog(true);
+            return;
+        }
+        showVerifyPinDialog("Unlock Hidden Vault", this::launchHiddenVault);
+    }
+
+    private void launchHiddenVault() {
+        String token = HiddenVaultManager.issueUnlockToken();
+        Intent intent = new Intent(this, HiddenVaultActivity.class);
+        intent.putExtra(HiddenVaultActivity.EXTRA_UNLOCK_TOKEN, token);
+        startActivity(intent);
+    }
+
+    private void showVerifyPinDialog(String title, final Runnable onVerified) {
+        final EditText input = new EditText(this);
+        input.setHint("Enter 4-8 digit PIN");
+        input.setInputType(InputType.TYPE_CLASS_NUMBER | InputType.TYPE_NUMBER_VARIATION_PASSWORD);
+        input.setTransformationMethod(PasswordTransformationMethod.getInstance());
+        input.setFilters(new InputFilter[]{new InputFilter.LengthFilter(8)});
+        input.setSingleLine(true);
+
+        LinearLayout wrap = new LinearLayout(this);
+        int p = dpInt(20);
+        wrap.setPadding(p, p / 2, p, p / 2);
+        wrap.addView(input, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT
+        ));
+
+        AlertDialog dialog = new AlertDialog.Builder(this, android.R.style.Theme_DeviceDefault_Dialog_Alert)
+                .setTitle(title)
+                .setView(wrap)
+                .setPositiveButton("Unlock", (d, w) -> {
+                    String entered = input.getText().toString().trim();
+                    if (HiddenVaultManager.verifyVaultPin(this, entered)) {
+                        onVerified.run();
+                    } else {
+                        Toast.makeText(this, "Incorrect PIN", Toast.LENGTH_SHORT).show();
+                    }
+                })
+                .setNegativeButton("Cancel", null)
+                .create();
+        if (dialog.getWindow() != null) {
+            dialog.getWindow().addFlags(WindowManager.LayoutParams.FLAG_SECURE);
+        }
+        dialog.show();
+    }
+
+    private void showSetOrChangeVaultPinDialog(final boolean openVaultAfter) {
+        if (prefs.hasVaultPin()) {
+            showVerifyPinDialog("Enter Current PIN", () -> showNewPinEntryDialog(openVaultAfter));
+        } else {
+            showNewPinEntryDialog(openVaultAfter);
+        }
+    }
+
+    private void showNewPinEntryDialog(final boolean openVaultAfter) {
+        final EditText pin1 = new EditText(this);
+        pin1.setHint("New PIN (4-8 digits)");
+        pin1.setInputType(InputType.TYPE_CLASS_NUMBER | InputType.TYPE_NUMBER_VARIATION_PASSWORD);
+        pin1.setTransformationMethod(PasswordTransformationMethod.getInstance());
+        pin1.setFilters(new InputFilter[]{new InputFilter.LengthFilter(8)});
+        pin1.setSingleLine(true);
+
+        final EditText pin2 = new EditText(this);
+        pin2.setHint("Confirm PIN");
+        pin2.setInputType(InputType.TYPE_CLASS_NUMBER | InputType.TYPE_NUMBER_VARIATION_PASSWORD);
+        pin2.setTransformationMethod(PasswordTransformationMethod.getInstance());
+        pin2.setFilters(new InputFilter[]{new InputFilter.LengthFilter(8)});
+        pin2.setSingleLine(true);
+
+        LinearLayout wrap = new LinearLayout(this);
+        wrap.setOrientation(LinearLayout.VERTICAL);
+        int p = dpInt(20);
+        wrap.setPadding(p, p / 2, p, p / 2);
+        wrap.addView(pin1, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT
+        ));
+        LinearLayout.LayoutParams p2Lp = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT
+        );
+        p2Lp.topMargin = dpInt(10);
+        wrap.addView(pin2, p2Lp);
+
+        AlertDialog dialog = new AlertDialog.Builder(this, android.R.style.Theme_DeviceDefault_Dialog_Alert)
+                .setTitle("Create Hidden Vault PIN")
+                .setView(wrap)
+                .setPositiveButton("Save PIN", (d, w) -> {
+                    String a = pin1.getText().toString().trim();
+                    String b = pin2.getText().toString().trim();
+                    if (a.length() < 4 || a.length() > 8) {
+                        Toast.makeText(this, "PIN must be 4 to 8 digits", Toast.LENGTH_SHORT).show();
+                        return;
+                    }
+                    if (!a.equals(b)) {
+                        Toast.makeText(this, "PINs do not match", Toast.LENGTH_SHORT).show();
+                        return;
+                    }
+                    if (HiddenVaultManager.setVaultPin(this, a)) {
+                        buildOneUiSettingsScreen();
+                        Toast.makeText(this, "Hidden Vault PIN saved", Toast.LENGTH_SHORT).show();
+                        if (openVaultAfter) {
+                            launchHiddenVault();
+                        }
+                    } else {
+                        Toast.makeText(this, "Could not save PIN", Toast.LENGTH_SHORT).show();
+                    }
+                })
+                .setNegativeButton("Cancel", null)
+                .create();
+        if (dialog.getWindow() != null) {
+            dialog.getWindow().addFlags(WindowManager.LayoutParams.FLAG_SECURE);
+        }
+        dialog.show();
+    }
+
+    private void showEditAutoExpireFolderDialog() {
+        final EditText input = new EditText(this);
+        input.setText(prefs.getAutoExpireFolderName());
+        input.setHint("e.g., Temp");
+        input.setSingleLine(true);
+
+        LinearLayout wrap = new LinearLayout(this);
+        int p = dpInt(20);
+        wrap.setPadding(p, p / 2, p, p / 2);
+        wrap.addView(input, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT
+        ));
+
+        AlertDialog.Builder builder = new AlertDialog.Builder(this, android.R.style.Theme_DeviceDefault_Dialog_Alert)
+                .setTitle("Self-Destructing Folder Name")
+                .setView(wrap)
+                .setPositiveButton("Save", (d, w) -> {
+                    String entered = input.getText().toString().trim();
+                    if (!entered.isEmpty()) {
+                        prefs.setAutoExpireFolderName(entered);
+                        buildOneUiSettingsScreen();
+                    }
+                })
+                .setNegativeButton("Cancel", null);
+
+        if (prefs.getAutoExpireTtlHours() > 0) {
+            builder.setNeutralButton("Clean Expired Now", (d, w) -> {
+                String entered = input.getText().toString().trim();
+                if (!entered.isEmpty()) {
+                    prefs.setAutoExpireFolderName(entered);
+                }
+                int removed = MediaStoreHelper.runAutoExpireCleanup(this, true);
+                buildOneUiSettingsScreen();
+                Toast.makeText(
+                        this,
+                        removed > 0 ? ("Cleaned " + removed + " expired image(s)") : "No expired images found",
+                        Toast.LENGTH_SHORT
+                ).show();
+            });
+        }
+        builder.show();
     }
 
     private LinearLayout createOneUiCard() {

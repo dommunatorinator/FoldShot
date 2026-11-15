@@ -91,6 +91,15 @@ def test_manifest_and_play_protect():
         "ScreenshotEditorActivity auto-removes cleanly from Recents after crop"
     )
 
+    assert_true(".HiddenVaultActivity" in activities, "HiddenVaultActivity declared")
+    vault_act = activities[".HiddenVaultActivity"]
+    assert_true(
+        vault_act.attrib.get(f"{ANDROID_NS}exported", "true") == "false"
+        and vault_act.attrib.get(f"{ANDROID_NS}excludeFromRecents", "false") == "true"
+        and vault_act.attrib.get(f"{ANDROID_NS}autoRemoveFromRecents", "false") == "true",
+        "HiddenVaultActivity is private (exported='false') and excluded/auto-removed from Recents"
+    )
+
     services = {s.attrib.get(f"{ANDROID_NS}name", ""): s for s in app.findall("service")}
     assert_true(".ScreenshotInterceptService" in services, "ScreenshotInterceptService declared")
     assert_true(".FoldShotTileService" in services, "Quick Settings FoldShotTileService declared for universal shade access")
@@ -110,6 +119,7 @@ def test_manifest_and_play_protect():
         strings_raw = f.read()
     assert_true("accessibility_desc" not in strings_raw, "Dead accessibility_desc string removed from strings.xml")
     assert_true(os.path.exists(os.path.join(WORK_DIR, "res/mipmap-xxxhdpi/ic_foldshot.png")), "Custom PNG app icon res/mipmap-xxxhdpi/ic_foldshot.png exists")
+    assert_true(os.path.exists(os.path.join(WORK_DIR, "res/drawable-nodpi/summer_cat.png")), "Custom Summer cat transparent cutout res/drawable-nodpi/summer_cat.png exists")
 
 
 def test_security_and_universal_oem_features():
@@ -341,6 +351,68 @@ def test_security_and_universal_oem_features():
         "Hide tray notification" in main_src
         and "ACTION_CHANNEL_NOTIFICATION_SETTINGS" in main_src,
         "MainActivity provides Hide tray notification switch and Android notification channel shortcut"
+    )
+
+    # 5k. Encrypted Offline Hidden Vault (Custom Long-Press Spot 'Summer' + PIN + 3s Minimize Chevron Hold + .foldvault Backup)
+    with open(os.path.join(WORK_DIR, "src/com/foldshot/app/HiddenVaultManager.java"), "r", encoding="utf-8") as f:
+        vault_mgr_src = f.read()
+    with open(os.path.join(WORK_DIR, "src/com/foldshot/app/HiddenVaultActivity.java"), "r", encoding="utf-8") as f:
+        vault_act_src = f.read()
+
+    assert_true(
+        "AndroidKeyStore" in vault_mgr_src
+        and "AES/GCM/NoPadding" in vault_mgr_src
+        and "PBKDF2WithHmacSHA256" in vault_mgr_src
+        and "MessageDigest.isEqual" in vault_mgr_src
+        and "exportEncryptedArchive" in vault_mgr_src
+        and "importEncryptedArchive" in vault_mgr_src,
+        "HiddenVaultManager implements offline Keystore AES-256-GCM encryption, salted PBKDF2 PIN auth, and .foldvault archive"
+    )
+    assert_true(
+        "FLAG_SECURE" in vault_act_src
+        and "consumeUnlockToken" in vault_act_src
+        and "finishAndRemoveTask" in vault_act_src,
+        "HiddenVaultActivity enforces FLAG_SECURE, ephemeral unlock token, and auto-lock on background"
+    )
+    assert_true(
+        "R.drawable.summer_cat" in main_src
+        and "\"Summer\"" in main_src
+        and "setOnLongClickListener" in main_src
+        and "handleVaultSpotLongPress" in main_src
+        and "\"Open Vault\"" not in main_src,
+        "MainActivity renders transparent Summer cat cutout at bottom with no visible 'Open Vault' button and PIN-gated long-press unlock"
+    )
+    assert_true(
+        "HOLD_VAULT_MS = 3000L" in view_src
+        and "folderMinimizeBtnRect" in view_src
+        and "onSaveToHiddenFolder" in view_src
+        and "onSaveToHiddenFolder" in service_src
+        and "onSaveToHiddenFolder" in editor_src,
+        "Overlay supports 3-second hold on More Folders minimize chevron to save privately to Hidden Vault"
+    )
+
+    # 5l. All 7 Offline Privacy Features (Redact/Pen, Aspect Ratio, EXIF Strip, Clipboard Timer, Auto-Expire, Anonymous Names, Screen-Off Auto-Hide)
+    assert_true(
+        "TOOL_REDACT" in view_src
+        and "TOOL_PEN" in view_src
+        and "renderMarkedCropBitmap" in view_src
+        and "aspectOptionRects" in view_src,
+        "OneUiSmartCaptureView provides inline Blackout Redact, Highlight Pen, Undo, and Aspect Ratio Lock pills"
+    )
+    assert_true(
+        "stripExifMetadataFromFile" in helper_src
+        and "scheduleClipboardAutoClear" in helper_src
+        and "runAutoExpireCleanup" in helper_src
+        and "buildOutputBaseName" in helper_src
+        and "isOwnSavedOutput" in helper_src,
+        "MediaStoreHelper implements EXIF/GPS stripping, clipboard auto-clear timer, auto-expire folder cleanup, and anonymous IMG_ filenames"
+    )
+    assert_true(
+        "ACTION_SCREEN_OFF" in service_src
+        and "FLAG_SECURE" in service_src
+        and "FLAG_SECURE" in editor_src
+        and "PRIVACY, VAULT & MARKUP" in main_src,
+        "Privacy overlay (FLAG_SECURE), dynamic screen-lock auto-hide, and MainActivity Privacy controls wired cleanly"
     )
 
     # 6. Expandable "More Folders" button on left of the 3 favorite folders (v2.1.0)

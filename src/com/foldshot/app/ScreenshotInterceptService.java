@@ -5,8 +5,10 @@ import android.app.NotificationChannel;
 import android.app.NotificationManager;
 import android.app.PendingIntent;
 import android.app.Service;
+import android.content.BroadcastReceiver;
 import android.content.Context;
 import android.content.Intent;
+import android.content.IntentFilter;
 import android.content.pm.ServiceInfo;
 import android.database.ContentObserver;
 import android.graphics.Bitmap;
@@ -57,6 +59,18 @@ public class ScreenshotInterceptService extends Service {
     private PowerManager powerManager;
     private OneUiSmartCaptureView activeOverlayView;
     private WindowManager.LayoutParams activeLayoutParams;
+    private boolean screenOffReceiverRegistered = false;
+
+    private final BroadcastReceiver screenOffReceiver = new BroadcastReceiver() {
+        @Override
+        public void onReceive(Context context, Intent intent) {
+            if (intent != null && Intent.ACTION_SCREEN_OFF.equals(intent.getAction())) {
+                if (new FoldShotPrefs(ScreenshotInterceptService.this).isSecureOverlayEnabled()) {
+                    removeActiveOverlay();
+                }
+            }
+        }
+    };
 
     private final List<FileObserver> dirObservers = new ArrayList<>();
     private Uri latestHintUri = null;
@@ -83,6 +97,7 @@ public class ScreenshotInterceptService extends Service {
             try {
                 if (powerManager == null || powerManager.isInteractive()) {
                     inspectLatestScreenshot(null);
+                    MediaStoreHelper.runAutoExpireCleanup(getApplicationContext(), false);
                 }
             } catch (Exception ignored) {
             }
@@ -221,6 +236,9 @@ public class ScreenshotInterceptService extends Service {
         if (!safeFallback) {
             flags |= WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS;
         }
+        if (new FoldShotPrefs(this).isSecureOverlayEnabled()) {
+            flags |= WindowManager.LayoutParams.FLAG_SECURE;
+        }
 
         WindowManager.LayoutParams lp = new WindowManager.LayoutParams(
                 safeFallback ? WindowManager.LayoutParams.MATCH_PARENT : geo.screenWidthPx,
@@ -244,6 +262,16 @@ public class ScreenshotInterceptService extends Service {
         return lp;
     }
 
+    private Bitmap cropAndApplyMarkups(OneUiSmartCaptureView view, Uri screenshotUri, Bitmap baseBmp, RectF normalizedCrop, boolean stitched) {
+        Bitmap cropped = MediaStoreHelper.cropFullResolution(
+                getApplicationContext(), screenshotUri, baseBmp, normalizedCrop, stitched
+        );
+        if (view != null && view.hasMarkups()) {
+            cropped = view.renderMarkedCropBitmap(cropped, normalizedCrop);
+        }
+        return cropped;
+    }
+
     private void showAutoOpenHud(final Uri screenshotUri, Bitmap initialBitmap) {
         showAutoOpenHud(screenshotUri, initialBitmap, false);
     }
@@ -260,8 +288,8 @@ public class ScreenshotInterceptService extends Service {
             activeOverlayView = new OneUiSmartCaptureView(overlayUiContext, prefs, new OneUiSmartCaptureView.Listener() {
                 @Override
                 public void onCopyAndDelete(RectF normalizedCrop) {
-                    Bitmap cropped = MediaStoreHelper.cropFullResolution(
-                            getApplicationContext(), screenshotUri, currentBmp[0], normalizedCrop, isStitched[0]
+                    Bitmap cropped = cropAndApplyMarkups(
+                            activeOverlayView, screenshotUri, currentBmp[0], normalizedCrop, isStitched[0]
                     );
                     MediaStoreHelper.copyBitmapToClipboard(getApplicationContext(), cropped);
                     MediaStoreHelper.deleteScreenshotSilently(getApplicationContext(), null, screenshotUri);
@@ -270,12 +298,13 @@ public class ScreenshotInterceptService extends Service {
 
                 @Override
                 public void onSaveScreenshot(RectF normalizedCrop) {
-                    boolean isFull = !isStitched[0] && MediaStoreHelper.isFullCrop(normalizedCrop);
+                    boolean hasMarkups = activeOverlayView != null && activeOverlayView.hasMarkups();
+                    boolean isFull = !hasMarkups && !isStitched[0] && MediaStoreHelper.isFullCrop(normalizedCrop);
                     boolean useOriginalStream = isFull && !Uri.EMPTY.equals(screenshotUri);
                     Bitmap cropped = useOriginalStream
                             ? null
-                            : MediaStoreHelper.cropFullResolution(
-                                    getApplicationContext(), screenshotUri, currentBmp[0], normalizedCrop, isStitched[0]
+                            : cropAndApplyMarkups(
+                                    activeOverlayView, screenshotUri, currentBmp[0], normalizedCrop, isStitched[0]
                             );
                     boolean saved = MediaStoreHelper.saveCroppedScreenshot(
                             getApplicationContext(), null, screenshotUri, cropped, isFull
@@ -295,12 +324,13 @@ public class ScreenshotInterceptService extends Service {
                         Toast.makeText(getApplicationContext(), "Folder not enabled in Visible Folders", Toast.LENGTH_SHORT).show();
                         return;
                     }
-                    boolean isFull = !isStitched[0] && MediaStoreHelper.isFullCrop(normalizedCrop);
+                    boolean hasMarkups = activeOverlayView != null && activeOverlayView.hasMarkups();
+                    boolean isFull = !hasMarkups && !isStitched[0] && MediaStoreHelper.isFullCrop(normalizedCrop);
                     boolean useOriginalStream = isFull && !Uri.EMPTY.equals(screenshotUri);
                     Bitmap cropped = useOriginalStream
                             ? null
-                            : MediaStoreHelper.cropFullResolution(
-                                    getApplicationContext(), screenshotUri, currentBmp[0], normalizedCrop, isStitched[0]
+                            : cropAndApplyMarkups(
+                                    activeOverlayView, screenshotUri, currentBmp[0], normalizedCrop, isStitched[0]
                             );
                     boolean moved = MediaStoreHelper.moveBitmapToFavoriteAlbum(
                             getApplicationContext(), null, screenshotUri, cropped, albumName, isFull
@@ -311,6 +341,32 @@ public class ScreenshotInterceptService extends Service {
                         );
                     }
                     Toast.makeText(getApplicationContext(), "Moved to " + albumName, Toast.LENGTH_SHORT).show();
+                    removeActiveOverlay();
+                }
+
+                @Override
+                public void onSaveToHiddenFolder(RectF normalizedCrop) {
+                    boolean hasMarkups = activeOverlayView != null && activeOverlayView.hasMarkups();
+                    boolean isFull = !hasMarkups && !isStitched[0] && MediaStoreHelper.isFullCrop(normalizedCrop);
+                    boolean useOriginalStream = isFull && !Uri.EMPTY.equals(screenshotUri);
+                    Bitmap cropped = useOriginalStream
+                            ? null
+                            : cropAndApplyMarkups(
+                                    activeOverlayView, screenshotUri, currentBmp[0], normalizedCrop, isStitched[0]
+                            );
+                    boolean ok = HiddenVaultManager.saveToVault(
+                            getApplicationContext(),
+                            useOriginalStream ? screenshotUri : null,
+                            cropped,
+                            isFull,
+                            prefs.isStripMetadataEnabled()
+                    );
+                    if (ok) {
+                        MediaStoreHelper.deleteScreenshotSilently(getApplicationContext(), null, screenshotUri);
+                        Toast.makeText(getApplicationContext(), "Saved privately", Toast.LENGTH_SHORT).show();
+                    } else {
+                        Toast.makeText(getApplicationContext(), "Could not save privately", Toast.LENGTH_SHORT).show();
+                    }
                     removeActiveOverlay();
                 }
 
@@ -346,8 +402,8 @@ public class ScreenshotInterceptService extends Service {
 
                 @Override
                 public void onShare(RectF normalizedCrop) {
-                    Bitmap cropped = MediaStoreHelper.cropFullResolution(
-                            getApplicationContext(), screenshotUri, currentBmp[0], normalizedCrop, isStitched[0]
+                    Bitmap cropped = cropAndApplyMarkups(
+                            activeOverlayView, screenshotUri, currentBmp[0], normalizedCrop, isStitched[0]
                     );
                     removeActiveOverlay();
                     MediaStoreHelper.shareBitmap(getApplicationContext(), cropped);
@@ -436,7 +492,7 @@ public class ScreenshotInterceptService extends Service {
                 FileObserver obs = new FileObserver(dir, mask) {
                     @Override
                     public void onEvent(int event, String path) {
-                        if (path == null || path.startsWith(".") || path.startsWith("FoldShot_")) return;
+                        if (path == null || path.startsWith(".") || path.startsWith("FoldShot_") || MediaStoreHelper.isOwnSavedOutput(null, path)) return;
                         String lowerPath = path.toLowerCase(java.util.Locale.US);
                         if (lowerPath.endsWith(".crdownload") || lowerPath.endsWith(".tmp") || lowerPath.endsWith(".part")) {
                             return;
@@ -475,6 +531,16 @@ public class ScreenshotInterceptService extends Service {
                 displayManager.registerDisplayListener(displayListener, handler);
             } catch (Exception ignored) {
             }
+        }
+        try {
+            IntentFilter screenOffFilter = new IntentFilter(Intent.ACTION_SCREEN_OFF);
+            if (Build.VERSION.SDK_INT >= 33) {
+                registerReceiver(screenOffReceiver, screenOffFilter, Context.RECEIVER_NOT_EXPORTED);
+            } else {
+                registerReceiver(screenOffReceiver, screenOffFilter);
+            }
+            screenOffReceiverRegistered = true;
+        } catch (Exception ignored) {
         }
         initUiWindowContext();
         startForegroundNotification();
@@ -639,6 +705,13 @@ public class ScreenshotInterceptService extends Service {
     @Override
     public void onDestroy() {
         removeActiveOverlay();
+        if (screenOffReceiverRegistered) {
+            try {
+                unregisterReceiver(screenOffReceiver);
+            } catch (Exception ignored) {
+            }
+            screenOffReceiverRegistered = false;
+        }
         if (displayManager != null) {
             try {
                 displayManager.unregisterDisplayListener(displayListener);

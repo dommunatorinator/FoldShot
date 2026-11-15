@@ -38,6 +38,9 @@ public class ScreenshotEditorActivity extends Activity implements OneUiSmartCapt
         }
 
         prefs = new FoldShotPrefs(this);
+        if (prefs.isSecureOverlayEnabled()) {
+            getWindow().addFlags(WindowManager.LayoutParams.FLAG_SECURE);
+        }
         captureView = new OneUiSmartCaptureView(this, prefs, this);
         captureView.setWindowStartsBelowStatusBar(false);
         setContentView(captureView);
@@ -60,11 +63,19 @@ public class ScreenshotEditorActivity extends Activity implements OneUiSmartCapt
         }
     }
 
-    @Override
-    public void onCopyAndDelete(RectF normalizedCrop) {
+    private Bitmap cropAndApplyMarkups(RectF normalizedCrop) {
         Bitmap cropped = MediaStoreHelper.cropFullResolution(
                 this, screenshotUri, screenshotBitmap, normalizedCrop, false
         );
+        if (captureView != null && captureView.hasMarkups()) {
+            cropped = captureView.renderMarkedCropBitmap(cropped, normalizedCrop);
+        }
+        return cropped;
+    }
+
+    @Override
+    public void onCopyAndDelete(RectF normalizedCrop) {
+        Bitmap cropped = cropAndApplyMarkups(normalizedCrop);
         MediaStoreHelper.copyBitmapToClipboard(this, cropped);
         boolean deleted = MediaStoreHelper.deleteScreenshotSilently(this, this, screenshotUri);
         if (deleted) {
@@ -74,13 +85,10 @@ public class ScreenshotEditorActivity extends Activity implements OneUiSmartCapt
 
     @Override
     public void onSaveScreenshot(RectF normalizedCrop) {
-        boolean isFull = MediaStoreHelper.isFullCrop(normalizedCrop);
+        boolean hasMarkups = captureView != null && captureView.hasMarkups();
+        boolean isFull = !hasMarkups && MediaStoreHelper.isFullCrop(normalizedCrop);
         boolean useOriginalStream = isFull && !Uri.EMPTY.equals(screenshotUri);
-        Bitmap cropped = useOriginalStream
-                ? null
-                : MediaStoreHelper.cropFullResolution(
-                        this, screenshotUri, screenshotBitmap, normalizedCrop, false
-                );
+        Bitmap cropped = useOriginalStream ? null : cropAndApplyMarkups(normalizedCrop);
         boolean ok = MediaStoreHelper.saveCroppedScreenshot(this, this, screenshotUri, cropped, isFull);
         if (!ok && cropped == null) {
             ok = MediaStoreHelper.saveCroppedScreenshot(this, this, screenshotUri, screenshotBitmap, false);
@@ -97,13 +105,10 @@ public class ScreenshotEditorActivity extends Activity implements OneUiSmartCapt
             Toast.makeText(this, "Folder not enabled in Visible Folders", Toast.LENGTH_SHORT).show();
             return;
         }
-        boolean isFull = MediaStoreHelper.isFullCrop(normalizedCrop);
+        boolean hasMarkups = captureView != null && captureView.hasMarkups();
+        boolean isFull = !hasMarkups && MediaStoreHelper.isFullCrop(normalizedCrop);
         boolean useOriginalStream = isFull && !Uri.EMPTY.equals(screenshotUri);
-        Bitmap cropped = useOriginalStream
-                ? null
-                : MediaStoreHelper.cropFullResolution(
-                        this, screenshotUri, screenshotBitmap, normalizedCrop, false
-                );
+        Bitmap cropped = useOriginalStream ? null : cropAndApplyMarkups(normalizedCrop);
         boolean ok = MediaStoreHelper.moveBitmapToFavoriteAlbum(this, this, screenshotUri, cropped, albumName, isFull);
         if (!ok && cropped == null) {
             ok = MediaStoreHelper.moveBitmapToFavoriteAlbum(this, this, screenshotUri, screenshotBitmap, albumName, false);
@@ -111,6 +116,30 @@ public class ScreenshotEditorActivity extends Activity implements OneUiSmartCapt
         if (ok) {
             Toast.makeText(this, "Moved to " + albumName, Toast.LENGTH_SHORT).show();
             finishAndRemoveTask();
+        }
+    }
+
+    @Override
+    public void onSaveToHiddenFolder(RectF normalizedCrop) {
+        boolean hasMarkups = captureView != null && captureView.hasMarkups();
+        boolean isFull = !hasMarkups && MediaStoreHelper.isFullCrop(normalizedCrop);
+        boolean useOriginalStream = isFull && !Uri.EMPTY.equals(screenshotUri);
+        Bitmap cropped = useOriginalStream ? null : cropAndApplyMarkups(normalizedCrop);
+        boolean ok = HiddenVaultManager.saveToVault(
+                this,
+                useOriginalStream ? screenshotUri : null,
+                cropped,
+                isFull,
+                prefs != null ? prefs.isStripMetadataEnabled() : true
+        );
+        if (ok) {
+            Toast.makeText(this, "Saved privately", Toast.LENGTH_SHORT).show();
+            boolean deleted = MediaStoreHelper.deleteScreenshotSilently(this, this, screenshotUri);
+            if (deleted) {
+                finishAndRemoveTask();
+            }
+        } else {
+            Toast.makeText(this, "Could not save privately", Toast.LENGTH_SHORT).show();
         }
     }
 
@@ -127,9 +156,7 @@ public class ScreenshotEditorActivity extends Activity implements OneUiSmartCapt
 
     @Override
     public void onShare(RectF normalizedCrop) {
-        Bitmap cropped = MediaStoreHelper.cropFullResolution(
-                this, screenshotUri, screenshotBitmap, normalizedCrop, false
-        );
+        Bitmap cropped = cropAndApplyMarkups(normalizedCrop);
         MediaStoreHelper.shareBitmap(this, cropped);
         finishAndRemoveTask();
     }
