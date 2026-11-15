@@ -324,6 +324,25 @@ def test_security_and_universal_oem_features():
         "MainActivity provides SAF Export/Import, Clipboard JSON backup/restore, and auto-restore on fresh install"
     )
 
+    # 5j. Hide Tray Notification Option & Explicit "Hide in Settings" Notice
+    assert_true(
+        "isHideTrayNotificationEnabled" in prefs_src
+        and "setHideTrayNotificationEnabled" in prefs_src
+        and "hide_tray_notification" in prefs_src,
+        "FoldShotPrefs persists hide_tray_notification option and includes it in Settings Profile"
+    )
+    assert_true(
+        "Hide in Settings" in service_src
+        and "STOP_FOREGROUND_REMOVE" in service_src
+        and "isTrayNotificationMutedInSystem" in service_src,
+        "ScreenshotInterceptService tray notification explicitly says 'Hide in Settings' and removes notification when hidden"
+    )
+    assert_true(
+        "Hide tray notification" in main_src
+        and "ACTION_CHANNEL_NOTIFICATION_SETTINGS" in main_src,
+        "MainActivity provides Hide tray notification switch and Android notification channel shortcut"
+    )
+
     # 6. Expandable "More Folders" button on left of the 3 favorite folders (v2.1.0)
     assert_true("expandFoldersBtnRect" in view_src, "Small expand button rect declared on left of the 3 folders")
     assert_true("showMoreFoldersDrawer" in view_src, "In-overlay expanded folder selection drawer state implemented")

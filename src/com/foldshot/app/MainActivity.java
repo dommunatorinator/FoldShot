@@ -296,6 +296,41 @@ public class MainActivity extends Activity {
                 !MediaStoreHelper.isSamsungDevice() && hasUnrestrictedBg,
                 v -> MediaStoreHelper.openOemBackgroundSettings(this)
         ));
+        permCard.addView(createDivider());
+
+        boolean hideTrayEnabled = prefs.isHideTrayNotificationEnabled();
+        boolean systemChannelMuted = ScreenshotInterceptService.isTrayNotificationMutedInSystem(this);
+        String hideTraySubtitle = systemChannelMuted
+                ? "Hidden cleanly in Android notification settings (full 24/7 foreground priority)"
+                : (hideTrayEnabled
+                ? "Hidden from notification tray • Tap 'System notification settings' below for 24/7 OS mute"
+                : "Off — shows FoldShot status notification in the tray");
+        permCard.addView(createSwitchRow(
+                "Hide tray notification",
+                hideTraySubtitle,
+                hideTrayEnabled || systemChannelMuted,
+                checked -> {
+                    prefs.setHideTrayNotificationEnabled(checked);
+                    if (!checked && ScreenshotInterceptService.isTrayNotificationMutedInSystem(this)) {
+                        Toast.makeText(this, "Re-enable FoldShot notifications in Android Settings", Toast.LENGTH_LONG).show();
+                        openNotificationChannelSettings();
+                        return;
+                    }
+                    startWatcherService(ScreenshotInterceptService.ACTION_RELOAD_OBSERVER);
+                    buildOneUiSettingsScreen();
+                }
+        ));
+        permCard.addView(createDivider());
+
+        permCard.addView(createPermissionRow(
+                "System notification channel",
+                systemChannelMuted
+                        ? "Tray notification muted by Android — keeps 24/7 background screenshot watcher active"
+                        : "Optional: Turn off 'FoldShot Smart Capture Utility' here to hide tray icon without losing foreground uptime",
+                systemChannelMuted ? "Muted" : "Open",
+                systemChannelMuted,
+                v -> openNotificationChannelSettings()
+        ));
         rootContent.addView(permCard);
 
         // 2a. Section: SETTINGS PROFILE (Survives APK Uninstall / Reinstall Updates)
@@ -1126,6 +1161,25 @@ public class MainActivity extends Activity {
                 })
                 .setNegativeButton("Close", null)
                 .show();
+    }
+
+    private void openNotificationChannelSettings() {
+        try {
+            Intent intent = new Intent(Settings.ACTION_CHANNEL_NOTIFICATION_SETTINGS);
+            intent.putExtra(Settings.EXTRA_APP_PACKAGE, getPackageName());
+            intent.putExtra(Settings.EXTRA_CHANNEL_ID, ScreenshotInterceptService.CHANNEL_ID);
+            startActivity(intent);
+            return;
+        } catch (Exception ignored) {
+        }
+        try {
+            Intent intent = new Intent(Settings.ACTION_APP_NOTIFICATION_SETTINGS);
+            intent.putExtra(Settings.EXTRA_APP_PACKAGE, getPackageName());
+            startActivity(intent);
+            return;
+        } catch (Exception ignored) {
+        }
+        openAppPermissionSettings();
     }
 
     private void openAppPermissionSettings() {

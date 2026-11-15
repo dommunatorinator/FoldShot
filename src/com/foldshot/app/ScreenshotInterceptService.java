@@ -481,32 +481,60 @@ public class ScreenshotInterceptService extends Service {
         registerAllScreenshotWatchers();
     }
 
+    public static final String CHANNEL_ID = "foldshot_zfold7_listener";
+    public static final int NOTIFICATION_ID = 1001;
+
+    public static boolean isTrayNotificationMutedInSystem(Context context) {
+        try {
+            NotificationManager nm = context.getSystemService(NotificationManager.class);
+            if (nm == null) return false;
+            if (!nm.areNotificationsEnabled()) return true;
+            NotificationChannel ch = nm.getNotificationChannel(CHANNEL_ID);
+            return ch != null && ch.getImportance() == NotificationManager.IMPORTANCE_NONE;
+        } catch (Exception ignored) {
+            return false;
+        }
+    }
+
     private void startForegroundNotification() {
         try {
-            String channelId = "foldshot_zfold7_listener";
             NotificationManager nm = getSystemService(NotificationManager.class);
             NotificationChannel channel = new NotificationChannel(
-                    channelId,
+                    CHANNEL_ID,
                     "FoldShot Smart Capture Utility",
                     NotificationManager.IMPORTANCE_MIN
             );
-            nm.createNotificationChannel(channel);
+            if (nm != null) {
+                nm.createNotificationChannel(channel);
+            }
 
             Intent openIntent = new Intent(this, MainActivity.class);
             PendingIntent pi = PendingIntent.getActivity(this, 0, openIntent, PendingIntent.FLAG_IMMUTABLE);
 
-            Notification notification = new Notification.Builder(this, channelId)
+            String summaryText = "Auto-opens on screenshot • Hide in Settings";
+            Notification notification = new Notification.Builder(this, CHANNEL_ID)
                     .setContentTitle("FoldShot Smart Capture Active")
-                    .setContentText("Auto-opens on screenshot • Tap to open Control Center")
+                    .setContentText(summaryText)
+                    .setStyle(new Notification.BigTextStyle().bigText(
+                            "Auto-opens on screenshot • Tap to open Control Center (Hide in Settings)"
+                    ))
                     .setSmallIcon(android.R.drawable.ic_menu_crop)
                     .setContentIntent(pi)
                     .setOngoing(true)
                     .build();
 
             if (Build.VERSION.SDK_INT >= 34) {
-                startForeground(1001, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE);
+                startForeground(NOTIFICATION_ID, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE);
             } else {
-                startForeground(1001, notification);
+                startForeground(NOTIFICATION_ID, notification);
+            }
+
+            FoldShotPrefs prefs = new FoldShotPrefs(this);
+            if (prefs.isHideTrayNotificationEnabled() && !isTrayNotificationMutedInSystem(this)) {
+                stopForeground(Service.STOP_FOREGROUND_REMOVE);
+                if (nm != null) {
+                    nm.cancel(NOTIFICATION_ID);
+                }
             }
         } catch (Exception ignored) {
         }

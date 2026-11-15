@@ -314,6 +314,18 @@ public class FoldShotPrefs {
         markConfiguredAndBackup();
     }
 
+    /**
+     * Option to hide the persistent FoldShot tray notification (OFF by default).
+     */
+    public boolean isHideTrayNotificationEnabled() {
+        return prefs.getBoolean("hide_tray_notification", false);
+    }
+
+    public void setHideTrayNotificationEnabled(boolean enabled) {
+        prefs.edit().putBoolean("hide_tray_notification", enabled).apply();
+        markConfiguredAndBackup();
+    }
+
     public long getLastBackupTimestampMs() {
         return prefs.getLong(KEY_LAST_BACKUP_TS, 0L);
     }
@@ -382,6 +394,7 @@ public class FoldShotPrefs {
             JSONObject triggers = new JSONObject();
             triggers.put("trigger_on_messenger", isTriggerOnMessengerEnabled());
             triggers.put("trigger_on_browser_downloads", isTriggerOnBrowserDownloadsEnabled());
+            triggers.put("hide_tray_notification", isHideTrayNotificationEnabled());
             root.put("triggers", triggers);
 
             JSONObject editor = new JSONObject();
@@ -445,6 +458,9 @@ public class FoldShotPrefs {
                 }
                 if (triggers.has("trigger_on_browser_downloads")) {
                     ed.putBoolean("trigger_on_browser_downloads", triggers.optBoolean("trigger_on_browser_downloads", false));
+                }
+                if (triggers.has("hide_tray_notification")) {
+                    ed.putBoolean("hide_tray_notification", triggers.optBoolean("hide_tray_notification", false));
                 }
             }
 
