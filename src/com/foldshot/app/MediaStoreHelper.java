@@ -17,11 +17,14 @@ import android.content.res.Resources;
 import android.database.Cursor;
 import android.graphics.Bitmap;
 import android.graphics.BitmapFactory;
+import android.graphics.BitmapRegionDecoder;
 import android.graphics.Canvas;
 import android.graphics.Insets;
+import android.graphics.Matrix;
 import android.graphics.Rect;
 import android.graphics.RectF;
 import android.hardware.display.DisplayManager;
+import android.media.ExifInterface;
 import android.net.Uri;
 import android.os.Build;
 import android.os.Environment;
@@ -948,13 +951,93 @@ public class MediaStoreHelper {
         return Math.max(1, inSampleSize);
     }
 
+    private static int readExifOrientation(Context context, Uri uri) {
+        if (uri == null || Uri.EMPTY.equals(uri)) return ExifInterface.ORIENTATION_NORMAL;
+        try (InputStream in = openUriStream(context, uri)) {
+            if (in == null) return ExifInterface.ORIENTATION_NORMAL;
+            ExifInterface exif = new ExifInterface(in);
+            return exif.getAttributeInt(ExifInterface.TAG_ORIENTATION, ExifInterface.ORIENTATION_NORMAL);
+        } catch (Exception ignored) {
+            return ExifInterface.ORIENTATION_NORMAL;
+        }
+    }
+
+    private static Bitmap applyExifOrientation(Bitmap bmp, int orientation) {
+        if (bmp == null) return null;
+        Matrix m = new Matrix();
+        switch (orientation) {
+            case ExifInterface.ORIENTATION_FLIP_HORIZONTAL:
+                m.setScale(-1f, 1f);
+                break;
+            case ExifInterface.ORIENTATION_ROTATE_180:
+                m.setRotate(180f);
+                break;
+            case ExifInterface.ORIENTATION_FLIP_VERTICAL:
+                m.setScale(1f, -1f);
+                break;
+            case ExifInterface.ORIENTATION_TRANSPOSE:
+                m.setRotate(90f);
+                m.postScale(-1f, 1f);
+                break;
+            case ExifInterface.ORIENTATION_ROTATE_90:
+                m.setRotate(90f);
+                break;
+            case ExifInterface.ORIENTATION_TRANSVERSE:
+                m.setRotate(-90f);
+                m.postScale(-1f, 1f);
+                break;
+            case ExifInterface.ORIENTATION_ROTATE_270:
+                m.setRotate(270f);
+                break;
+            default:
+                return bmp;
+        }
+        try {
+            Bitmap transformed = Bitmap.createBitmap(bmp, 0, 0, bmp.getWidth(), bmp.getHeight(), m, true);
+            if (transformed != bmp) {
+                bmp.recycle();
+            }
+            return transformed;
+        } catch (OutOfMemoryError oom) {
+            return bmp;
+        }
+    }
+
+    private static RectF mapDisplayNormCropToRawNorm(RectF dispCrop, int orientation) {
+        float l = Math.max(0f, Math.min(1f, dispCrop.left));
+        float t = Math.max(0f, Math.min(1f, dispCrop.top));
+        float r = Math.max(l, Math.min(1f, dispCrop.right));
+        float b = Math.max(t, Math.min(1f, dispCrop.bottom));
+
+        switch (orientation) {
+            case ExifInterface.ORIENTATION_FLIP_HORIZONTAL:
+                return new RectF(1f - r, t, 1f - l, b);
+            case ExifInterface.ORIENTATION_ROTATE_180:
+                return new RectF(1f - r, 1f - b, 1f - l, 1f - t);
+            case ExifInterface.ORIENTATION_FLIP_VERTICAL:
+                return new RectF(l, 1f - b, r, 1f - t);
+            case ExifInterface.ORIENTATION_TRANSPOSE:
+                return new RectF(t, l, b, r);
+            case ExifInterface.ORIENTATION_ROTATE_90:
+                return new RectF(t, 1f - r, b, 1f - l);
+            case ExifInterface.ORIENTATION_TRANSVERSE:
+                return new RectF(1f - b, 1f - r, 1f - t, 1f - l);
+            case ExifInterface.ORIENTATION_ROTATE_270:
+                return new RectF(1f - b, l, 1f - t, r);
+            default:
+                return new RectF(l, t, r, b);
+        }
+    }
+
     /**
-     * Loads bitmap safely across high-DPI devices and Mali/MediaTek GPUs (Helio G99 on Infinix X6851)
+     * Loads GPU-safe preview bitmap across high-DPI devices and Mali/MediaTek GPUs (Helio G99 on Infinix X6851)
      * without hitting OutOfMemoryError or OpenGL max texture limits.
      */
     public static Bitmap loadBitmap(Context context, Uri uri) {
         if (uri == null || Uri.EMPTY.equals(uri)) return null;
         try {
+            int orientation = readExifOrientation(context, uri);
+
             BitmapFactory.Options boundsOpts = new BitmapFactory.Options();
             boundsOpts.inJustDecodeBounds = true;
             try (InputStream in = openUriStream(context, uri)) {
@@ -967,7 +1050,8 @@ public class MediaStoreHelper {
             decodeOpts.inPreferredConfig = Bitmap.Config.ARGB_8888;
             try (InputStream in = openUriStream(context, uri)) {
                 if (in == null) return null;
-                return BitmapFactory.decodeStream(in, null, decodeOpts);
+                Bitmap decoded = BitmapFactory.decodeStream(in, null, decodeOpts);
+                return applyExifOrientation(decoded, orientation);
             }
         } catch (OutOfMemoryError oom) {
             System.gc();
@@ -975,6 +1059,107 @@ public class MediaStoreHelper {
         } catch (Exception e) {
             return null;
         }
+    }
+
+    /**
+     * Decodes the actual full-resolution image (inSampleSize = 1) directly from sourceUri
+     * so saving, moving, copying, or sharing photos downloaded from other apps never loses resolution.
+     */
+    public static Bitmap loadFullResolutionBitmap(Context context, Uri uri) {
+        if (uri == null || Uri.EMPTY.equals(uri)) return null;
+        int orientation = readExifOrientation(context, uri);
+        try {
+            BitmapFactory.Options decodeOpts = new BitmapFactory.Options();
+            decodeOpts.inSampleSize = 1;
+            decodeOpts.inPreferredConfig = Bitmap.Config.ARGB_8888;
+            try (InputStream in = openUriStream(context, uri)) {
+                if (in == null) return null;
+                Bitmap full = BitmapFactory.decodeStream(in, null, decodeOpts);
+                if (full != null) {
+                    return applyExifOrientation(full, orientation);
+                }
+            }
+        } catch (OutOfMemoryError oom) {
+            System.gc();
+        } catch (Exception ignored) {
+        }
+        return null;
+    }
+
+    public static boolean isFullCrop(RectF normCrop) {
+        return normCrop == null
+                || (normCrop.left <= 0.005f && normCrop.top <= 0.005f
+                && normCrop.right >= 0.995f && normCrop.bottom >= 0.995f);
+    }
+
+    /**
+     * Crops from the full-resolution original file (using BitmapRegionDecoder for very large photos
+     * or full-res Bitmap decoding), falling back to previewBitmap only when sourceUri is synthetic/empty.
+     */
+    @SuppressWarnings("deprecation")
+    public static Bitmap cropFullResolution(
+            Context context,
+            Uri sourceUri,
+            Bitmap previewFallback,
+            RectF normCrop,
+            boolean isStitched
+    ) {
+        boolean isFull = isFullCrop(normCrop);
+
+        if (isStitched || sourceUri == null || Uri.EMPTY.equals(sourceUri)) {
+            return cropBitmap(previewFallback, normCrop);
+        }
+
+        if (isFull) {
+            Bitmap full = loadFullResolutionBitmap(context, sourceUri);
+            if (full != null) return full;
+            return cropBitmap(previewFallback, normCrop);
+        }
+
+        int orientation = readExifOrientation(context, sourceUri);
+        try {
+            BitmapFactory.Options boundsOpts = new BitmapFactory.Options();
+            boundsOpts.inJustDecodeBounds = true;
+            try (InputStream in = openUriStream(context, sourceUri)) {
+                if (in != null) {
+                    BitmapFactory.decodeStream(in, null, boundsOpts);
+                }
+            }
+
+            int rawW = boundsOpts.outWidth;
+            int rawH = boundsOpts.outHeight;
+            if (rawW > 0 && rawH > 0) {
+                RectF rawNorm = mapDisplayNormCropToRawNorm(normCrop, orientation);
+                int rx = Math.max(0, Math.round(rawNorm.left * rawW));
+                int ry = Math.max(0, Math.round(rawNorm.top * rawH));
+                int rw = Math.max(1, Math.min(rawW - rx, Math.round((rawNorm.right - rawNorm.left) * rawW)));
+                int rh = Math.max(1, Math.min(rawH - ry, Math.round((rawNorm.bottom - rawNorm.top) * rawH)));
+
+                try (InputStream in = openUriStream(context, sourceUri)) {
+                    if (in != null) {
+                        BitmapRegionDecoder decoder = BitmapRegionDecoder.newInstance(in, false);
+                        if (decoder != null) {
+                            BitmapFactory.Options regionOpts = new BitmapFactory.Options();
+                            regionOpts.inSampleSize = 1;
+                            regionOpts.inPreferredConfig = Bitmap.Config.ARGB_8888;
+                            Bitmap region = decoder.decodeRegion(new Rect(rx, ry, rx + rw, ry + rh), regionOpts);
+                            decoder.recycle();
+                            if (region != null) {
+                                return applyExifOrientation(region, orientation);
+                            }
+                        }
+                    }
+                } catch (Throwable ignored) {
+                }
+            }
+        } catch (Throwable ignored) {
+        }
+
+        Bitmap full = loadFullResolutionBitmap(context, sourceUri);
+        if (full != null) {
+            return cropBitmap(full, normCrop);
+        }
+        return cropBitmap(previewFallback, normCrop);
     }
 
     private static InputStream openUriStream(Context context, Uri uri) throws Exception {
@@ -986,9 +1171,7 @@ public class MediaStoreHelper {
 
     public static Bitmap cropBitmap(Bitmap source, RectF normCrop) {
         if (source == null) return null;
-        boolean isFull = normCrop.left <= 0.005f && normCrop.top <= 0.005f
-                && normCrop.right >= 0.995f && normCrop.bottom >= 0.995f;
-        if (isFull) return source;
+        if (isFullCrop(normCrop)) return source;
 
         int x = Math.max(0, Math.round(normCrop.left * source.getWidth()));
         int y = Math.max(0, Math.round(normCrop.top * source.getHeight()));
@@ -1122,21 +1305,160 @@ public class MediaStoreHelper {
         return "Pictures/" + clean + "/";
     }
 
+    private static String[] detectSourceMimeAndExt(Context context, Uri sourceUri) {
+        String mimeType = null;
+        String displayName = null;
+        ContentResolver resolver = context.getContentResolver();
+        try {
+            if ("content".equalsIgnoreCase(sourceUri.getScheme())) {
+                mimeType = resolver.getType(sourceUri);
+                try (Cursor c = resolver.query(
+                        sourceUri,
+                        new String[]{MediaStore.MediaColumns.MIME_TYPE, MediaStore.MediaColumns.DISPLAY_NAME},
+                        null, null, null
+                )) {
+                    if (c != null && c.moveToFirst()) {
+                        int mIdx = c.getColumnIndex(MediaStore.MediaColumns.MIME_TYPE);
+                        int nIdx = c.getColumnIndex(MediaStore.MediaColumns.DISPLAY_NAME);
+                        if (mIdx >= 0 && (mimeType == null || mimeType.isEmpty() || mimeType.endsWith("/*"))) {
+                            mimeType = c.getString(mIdx);
+                        }
+                        if (nIdx >= 0) {
+                            displayName = c.getString(nIdx);
+                        }
+                    }
+                } catch (Exception ignored) {
+                }
+            }
+        } catch (Exception ignored) {
+        }
+
+        String candidateMime = mimeType != null ? mimeType.toLowerCase(Locale.US) : "";
+        if (candidateMime.contains("jpeg") || candidateMime.contains("jpg")) {
+            return new String[]{"image/jpeg", ".jpg"};
+        }
+        if (candidateMime.contains("webp")) {
+            return new String[]{"image/webp", ".webp"};
+        }
+        if (candidateMime.contains("heic") || candidateMime.contains("heif")) {
+            return new String[]{"image/heic", ".heic"};
+        }
+        if (candidateMime.contains("png")) {
+            return new String[]{"image/png", ".png"};
+        }
+
+        String nameOrPath = displayName != null ? displayName : sourceUri.getPath();
+        if (nameOrPath != null) {
+            String lp = nameOrPath.toLowerCase(Locale.US);
+            if (lp.endsWith(".jpg") || lp.endsWith(".jpeg")) {
+                return new String[]{"image/jpeg", ".jpg"};
+            }
+            if (lp.endsWith(".webp")) {
+                return new String[]{"image/webp", ".webp"};
+            }
+            if (lp.endsWith(".heic") || lp.endsWith(".heif")) {
+                return new String[]{"image/heic", ".heic"};
+            }
+            if (lp.endsWith(".png")) {
+                return new String[]{"image/png", ".png"};
+            }
+        }
+
+        // Sniff header bytes when metadata is absent
+        try (InputStream in = openUriStream(context, sourceUri)) {
+            if (in != null) {
+                byte[] hdr = new byte[12];
+                int n = in.read(hdr);
+                if (n >= 3 && (hdr[0] & 0xFF) == 0xFF && (hdr[1] & 0xFF) == 0xD8 && (hdr[2] & 0xFF) == 0xFF) {
+                    return new String[]{"image/jpeg", ".jpg"};
+                }
+                if (n >= 12 && hdr[0] == 'R' && hdr[1] == 'I' && hdr[2] == 'F' && hdr[3] == 'F'
+                        && hdr[8] == 'W' && hdr[9] == 'E' && hdr[10] == 'B' && hdr[11] == 'P') {
+                    return new String[]{"image/webp", ".webp"};
+                }
+            }
+        } catch (Exception ignored) {
+        }
+        return new String[]{"image/png", ".png"};
+    }
+
+    private static boolean copyOriginalStreamToMediaStore(
+            Context context,
+            Uri sourceUri,
+            String relFolder,
+            String baseDisplayName
+    ) {
+        if (sourceUri == null || Uri.EMPTY.equals(sourceUri)) return false;
+        ContentResolver resolver = context.getContentResolver();
+        String[] mimeAndExt = detectSourceMimeAndExt(context, sourceUri);
+        String mimeType = mimeAndExt[0];
+        String ext = mimeAndExt[1];
+
+        Uri inserted = null;
+        try {
+            ContentValues values = new ContentValues();
+            values.put(MediaStore.Images.Media.DISPLAY_NAME, baseDisplayName + ext);
+            values.put(MediaStore.Images.Media.MIME_TYPE, mimeType);
+            values.put(MediaStore.Images.Media.RELATIVE_PATH, relFolder);
+            values.put(MediaStore.Images.Media.IS_PENDING, 1);
+
+            inserted = resolver.insert(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, values);
+            if (inserted == null) return false;
+
+            try (InputStream in = openUriStream(context, sourceUri);
+                 OutputStream out = resolver.openOutputStream(inserted)) {
+                if (in == null || out == null) {
+                    resolver.delete(inserted, null, null);
+                    return false;
+                }
+                byte[] buf = new byte[16384];
+                int len;
+                while ((len = in.read(buf)) != -1) {
+                    out.write(buf, 0, len);
+                }
+                out.flush();
+            }
+
+            ContentValues done = new ContentValues();
+            done.put(MediaStore.Images.Media.IS_PENDING, 0);
+            resolver.update(inserted, done, null, null);
+            return true;
+        } catch (Exception e) {
+            if (inserted != null) {
+                try {
+                    resolver.delete(inserted, null, null);
+                } catch (Exception ignored) {
+                }
+            }
+            return false;
+        }
+    }
+
     public static boolean moveBitmapToFavoriteAlbum(Context context, Activity optionalActivity, Uri sourceUri, Bitmap cropped, String albumName, boolean isFullCrop) {
         ContentResolver resolver = context.getContentResolver();
         String relFolder = resolveRelativePathForAlbum(context, albumName);
 
-        if (isFullCrop && sourceUri != null && !Uri.EMPTY.equals(sourceUri) && "content".equalsIgnoreCase(sourceUri.getScheme())) {
-            try {
-                ContentValues moveVals = new ContentValues();
-                moveVals.put(MediaStore.MediaColumns.RELATIVE_PATH, relFolder);
-                if (resolver.update(sourceUri, moveVals, null, null) > 0) {
-                    return true;
+        if (isFullCrop && sourceUri != null && !Uri.EMPTY.equals(sourceUri)) {
+            if ("content".equalsIgnoreCase(sourceUri.getScheme())) {
+                try {
+                    ContentValues moveVals = new ContentValues();
+                    moveVals.put(MediaStore.MediaColumns.RELATIVE_PATH, relFolder);
+                    if (resolver.update(sourceUri, moveVals, null, null) > 0) {
+                        return true;
+                    }
+                } catch (Exception ignored) {
                 }
-            } catch (Exception ignored) {
+            }
+            if (copyOriginalStreamToMediaStore(context, sourceUri, relFolder, "FoldShot_" + System.currentTimeMillis())) {
+                deleteScreenshotSilently(context, optionalActivity, sourceUri);
+                return true;
+            }
+            if (cropped == null) {
+                cropped = loadFullResolutionBitmap(context, sourceUri);
             }
         }
 
+        if (cropped == null) return false;
         try {
             ContentValues values = new ContentValues();
             values.put(MediaStore.Images.Media.DISPLAY_NAME, "FoldShot_" + System.currentTimeMillis() + ".png");
@@ -1198,7 +1520,6 @@ public class MediaStoreHelper {
     }
 
     public static boolean saveCroppedScreenshot(Context context, Activity optionalActivity, Uri sourceUri, Bitmap cropped, boolean isFullCrop) {
-        if (cropped == null) return false;
         ContentResolver resolver = context.getContentResolver();
         String relFolder = resolveScreenshotRelativePath(context, sourceUri);
 
@@ -1219,8 +1540,26 @@ public class MediaStoreHelper {
             if (alreadyInScreenshots) {
                 return true;
             }
+            if ("content".equalsIgnoreCase(sourceUri.getScheme())) {
+                try {
+                    ContentValues moveVals = new ContentValues();
+                    moveVals.put(MediaStore.MediaColumns.RELATIVE_PATH, relFolder);
+                    if (resolver.update(sourceUri, moveVals, null, null) > 0) {
+                        return true;
+                    }
+                } catch (Exception ignored) {
+                }
+            }
+            if (copyOriginalStreamToMediaStore(context, sourceUri, relFolder, "FoldShot_Screenshot_" + System.currentTimeMillis())) {
+                deleteScreenshotSilently(context, optionalActivity, sourceUri);
+                return true;
+            }
+            if (cropped == null) {
+                cropped = loadFullResolutionBitmap(context, sourceUri);
+            }
         }
 
+        if (cropped == null) return false;
         try {
             ContentValues values = new ContentValues();
             values.put(MediaStore.Images.Media.DISPLAY_NAME, "FoldShot_Screenshot_" + System.currentTimeMillis() + ".png");

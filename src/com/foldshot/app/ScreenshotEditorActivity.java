@@ -62,7 +62,9 @@ public class ScreenshotEditorActivity extends Activity implements OneUiSmartCapt
 
     @Override
     public void onCopyAndDelete(RectF normalizedCrop) {
-        Bitmap cropped = MediaStoreHelper.cropBitmap(screenshotBitmap, normalizedCrop);
+        Bitmap cropped = MediaStoreHelper.cropFullResolution(
+                this, screenshotUri, screenshotBitmap, normalizedCrop, false
+        );
         MediaStoreHelper.copyBitmapToClipboard(this, cropped);
         boolean deleted = MediaStoreHelper.deleteScreenshotSilently(this, this, screenshotUri);
         if (deleted) {
@@ -72,10 +74,17 @@ public class ScreenshotEditorActivity extends Activity implements OneUiSmartCapt
 
     @Override
     public void onSaveScreenshot(RectF normalizedCrop) {
-        boolean isFull = normalizedCrop.left <= 0.01f && normalizedCrop.top <= 0.01f
-                && normalizedCrop.right >= 0.99f && normalizedCrop.bottom >= 0.99f;
-        Bitmap cropped = MediaStoreHelper.cropBitmap(screenshotBitmap, normalizedCrop);
+        boolean isFull = MediaStoreHelper.isFullCrop(normalizedCrop);
+        boolean useOriginalStream = isFull && !Uri.EMPTY.equals(screenshotUri);
+        Bitmap cropped = useOriginalStream
+                ? null
+                : MediaStoreHelper.cropFullResolution(
+                        this, screenshotUri, screenshotBitmap, normalizedCrop, false
+                );
         boolean ok = MediaStoreHelper.saveCroppedScreenshot(this, this, screenshotUri, cropped, isFull);
+        if (!ok && cropped == null) {
+            ok = MediaStoreHelper.saveCroppedScreenshot(this, this, screenshotUri, screenshotBitmap, false);
+        }
         if (ok) {
             Toast.makeText(this, "Saved to Screenshots", Toast.LENGTH_SHORT).show();
             finishAndRemoveTask();
@@ -88,10 +97,17 @@ public class ScreenshotEditorActivity extends Activity implements OneUiSmartCapt
             Toast.makeText(this, "Folder not enabled in Visible Folders", Toast.LENGTH_SHORT).show();
             return;
         }
-        boolean isFull = normalizedCrop.left <= 0.01f && normalizedCrop.top <= 0.01f
-                && normalizedCrop.right >= 0.99f && normalizedCrop.bottom >= 0.99f;
-        Bitmap cropped = MediaStoreHelper.cropBitmap(screenshotBitmap, normalizedCrop);
+        boolean isFull = MediaStoreHelper.isFullCrop(normalizedCrop);
+        boolean useOriginalStream = isFull && !Uri.EMPTY.equals(screenshotUri);
+        Bitmap cropped = useOriginalStream
+                ? null
+                : MediaStoreHelper.cropFullResolution(
+                        this, screenshotUri, screenshotBitmap, normalizedCrop, false
+                );
         boolean ok = MediaStoreHelper.moveBitmapToFavoriteAlbum(this, this, screenshotUri, cropped, albumName, isFull);
+        if (!ok && cropped == null) {
+            ok = MediaStoreHelper.moveBitmapToFavoriteAlbum(this, this, screenshotUri, screenshotBitmap, albumName, false);
+        }
         if (ok) {
             Toast.makeText(this, "Moved to " + albumName, Toast.LENGTH_SHORT).show();
             finishAndRemoveTask();
@@ -111,7 +127,9 @@ public class ScreenshotEditorActivity extends Activity implements OneUiSmartCapt
 
     @Override
     public void onShare(RectF normalizedCrop) {
-        Bitmap cropped = MediaStoreHelper.cropBitmap(screenshotBitmap, normalizedCrop);
+        Bitmap cropped = MediaStoreHelper.cropFullResolution(
+                this, screenshotUri, screenshotBitmap, normalizedCrop, false
+        );
         MediaStoreHelper.shareBitmap(this, cropped);
         finishAndRemoveTask();
     }

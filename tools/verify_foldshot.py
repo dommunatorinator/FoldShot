@@ -284,6 +284,25 @@ def test_security_and_universal_oem_features():
         "MediaStoreHelper & ScreenshotInterceptService seamlessly watch Messenger & Browser download folders when enabled"
     )
 
+    # 5h. Full-Resolution Loading, Cropping & Lossless Stream Copy for Downloaded/Saved Photos
+    assert_true(
+        "loadFullResolutionBitmap" in helper_src
+        and "cropFullResolution" in helper_src
+        and "BitmapRegionDecoder" in helper_src
+        and "ExifInterface" in helper_src
+        and "copyOriginalStreamToMediaStore" in helper_src
+        and "detectSourceMimeAndExt" in helper_src
+        and "isFullCrop" in helper_src,
+        "MediaStoreHelper preserves full resolution via BitmapRegionDecoder, EXIF orientation mapping, and lossless stream copy"
+    )
+    assert_true(
+        "MediaStoreHelper.cropFullResolution(" in service_src
+        and "MediaStoreHelper.cropFullResolution(" in editor_src
+        and "MediaStoreHelper.isFullCrop(" in service_src
+        and "MediaStoreHelper.isFullCrop(" in editor_src,
+        "ScreenshotInterceptService and ScreenshotEditorActivity use cropFullResolution and lossless original moves/saves"
+    )
+
     # 6. Expandable "More Folders" button on left of the 3 favorite folders (v2.1.0)
     assert_true("expandFoldersBtnRect" in view_src, "Small expand button rect declared on left of the 3 folders")
     assert_true("showMoreFoldersDrawer" in view_src, "In-overlay expanded folder selection drawer state implemented")
