@@ -1649,8 +1649,24 @@ public class MediaStoreHelper {
         return false;
     }
 
+    public static final int DELETE_STATUS_FAILED = 0;
+    public static final int DELETE_STATUS_DELETED = 1;
+    public static final int DELETE_STATUS_PROMPT_SHOWN = 2;
+
+    private static boolean contentUriExists(ContentResolver resolver, Uri contentUri) {
+        try (Cursor c = resolver.query(contentUri, new String[]{MediaStore.MediaColumns._ID}, null, null, null)) {
+            return c != null && c.moveToFirst();
+        } catch (Exception ignored) {
+            return false;
+        }
+    }
+
     public static boolean deleteScreenshotSilently(Context context, Activity optionalActivity, Uri sourceUri) {
-        if (sourceUri == null || Uri.EMPTY.equals(sourceUri) || context == null) return true;
+        return deleteScreenshotWithStatus(context, optionalActivity, sourceUri) == DELETE_STATUS_DELETED;
+    }
+
+    public static int deleteScreenshotWithStatus(Context context, Activity optionalActivity, Uri sourceUri) {
+        if (sourceUri == null || Uri.EMPTY.equals(sourceUri) || context == null) return DELETE_STATUS_DELETED;
 
         Uri resolvedUri = resolveContentUriForSource(context, sourceUri);
 
@@ -1659,7 +1675,7 @@ public class MediaStoreHelper {
             try {
                 File f = new File(filePath);
                 if (!f.exists() || f.delete()) {
-                    return true;
+                    return DELETE_STATUS_DELETED;
                 }
             } catch (Exception ignored) {
             }
@@ -1672,26 +1688,26 @@ public class MediaStoreHelper {
                         null,
                         (scannedPath, scannedUri) -> {
                             if (scannedUri != null) {
-                                CLIP_CLEAR_HANDLER.post(() -> deleteContentUriWithPromptFallback(appCtx, null, scannedUri));
+                                CLIP_CLEAR_HANDLER.post(() -> deleteContentUriWithStatus(appCtx, null, scannedUri));
                             }
                         }
                 );
             } catch (Exception ignored) {
             }
-            return false;
+            return DELETE_STATUS_FAILED;
         }
 
-        return deleteContentUriWithPromptFallback(context, optionalActivity, resolvedUri);
+        return deleteContentUriWithStatus(context, optionalActivity, resolvedUri);
     }
 
-    private static boolean deleteContentUriWithPromptFallback(Context context, Activity optionalActivity, Uri contentUri) {
-        if (contentUri == null || Uri.EMPTY.equals(contentUri)) return true;
-        if (!"content".equalsIgnoreCase(contentUri.getScheme())) return false;
+    private static int deleteContentUriWithStatus(Context context, Activity optionalActivity, Uri contentUri) {
+        if (contentUri == null || Uri.EMPTY.equals(contentUri)) return DELETE_STATUS_DELETED;
+        if (!"content".equalsIgnoreCase(contentUri.getScheme())) return DELETE_STATUS_FAILED;
         ContentResolver resolver = context.getContentResolver();
 
         try {
             int deleted = resolver.delete(contentUri, null, null);
-            if (deleted > 0) return true;
+            if (deleted > 0 || !contentUriExists(resolver, contentUri)) return DELETE_STATUS_DELETED;
         } catch (SecurityException secEx) {
             if (Build.VERSION.SDK_INT == 29 && secEx instanceof RecoverableSecurityException && optionalActivity != null) {
                 try {
@@ -1701,12 +1717,12 @@ public class MediaStoreHelper {
                             REQ_DELETE_SCREENSHOT,
                             null, 0, 0, 0
                     );
-                    return false;
-                } catch (IntentSender.SendIntentException ignored) {
+                    return DELETE_STATUS_PROMPT_SHOWN;
+                } catch (Exception ignored) {
                 }
             }
         } catch (IllegalArgumentException ignored) {
-            return true;
+            return DELETE_STATUS_DELETED;
         } catch (Exception ignored) {
         }
 
@@ -1719,17 +1735,18 @@ public class MediaStoreHelper {
                             REQ_DELETE_SCREENSHOT,
                             null, 0, 0, 0
                     );
-                    return false;
-                } catch (IntentSender.SendIntentException ignored) {
+                    return DELETE_STATUS_PROMPT_SHOWN;
+                } catch (Exception ignored) {
                 }
             } else {
                 ScreenshotEditorActivity.launchDeletePrompt(context, contentUri);
-                return false;
+                return DELETE_STATUS_PROMPT_SHOWN;
             }
         } else if (Build.VERSION.SDK_INT == 29 && optionalActivity == null) {
             ScreenshotEditorActivity.launchDeletePrompt(context, contentUri);
+            return DELETE_STATUS_PROMPT_SHOWN;
         }
-        return false;
+        return DELETE_STATUS_FAILED;
     }
 
     public static String resolveRelativePathForAlbum(Context context, String albumName) {

@@ -373,9 +373,9 @@ public class ScreenshotInterceptService extends Service {
                     Bitmap cropped = cropAndApplyMarkups(
                             activeOverlayView, screenshotUri, currentBmp[0], normalizedCrop, isStitched[0]
                     );
+                    removeActiveOverlay();
                     MediaStoreHelper.copyBitmapToClipboard(getApplicationContext(), cropped);
                     MediaStoreHelper.deleteScreenshotSilently(getApplicationContext(), null, screenshotUri);
-                    removeActiveOverlay();
                 }
 
                 @Override
@@ -388,6 +388,7 @@ public class ScreenshotInterceptService extends Service {
                             : cropAndApplyMarkups(
                                     activeOverlayView, screenshotUri, currentBmp[0], normalizedCrop, isStitched[0]
                             );
+                    removeActiveOverlay();
                     boolean saved = MediaStoreHelper.saveCroppedScreenshot(
                             getApplicationContext(), null, screenshotUri, cropped, isFull
                     );
@@ -397,7 +398,6 @@ public class ScreenshotInterceptService extends Service {
                         );
                     }
                     Toast.makeText(getApplicationContext(), "Saved to Screenshots", Toast.LENGTH_SHORT).show();
-                    removeActiveOverlay();
                 }
 
                 @Override
@@ -414,6 +414,7 @@ public class ScreenshotInterceptService extends Service {
                             : cropAndApplyMarkups(
                                     activeOverlayView, screenshotUri, currentBmp[0], normalizedCrop, isStitched[0]
                             );
+                    removeActiveOverlay();
                     boolean moved = MediaStoreHelper.moveBitmapToFavoriteAlbum(
                             getApplicationContext(), null, screenshotUri, cropped, albumName, isFull
                     );
@@ -423,7 +424,6 @@ public class ScreenshotInterceptService extends Service {
                         );
                     }
                     Toast.makeText(getApplicationContext(), "Moved to " + albumName, Toast.LENGTH_SHORT).show();
-                    removeActiveOverlay();
                 }
 
                 @Override
@@ -436,6 +436,7 @@ public class ScreenshotInterceptService extends Service {
                             : cropAndApplyMarkups(
                                     activeOverlayView, screenshotUri, currentBmp[0], normalizedCrop, isStitched[0]
                             );
+                    removeActiveOverlay();
                     boolean ok = HiddenVaultManager.saveToVault(
                             getApplicationContext(),
                             useOriginalStream ? screenshotUri : null,
@@ -444,12 +445,11 @@ public class ScreenshotInterceptService extends Service {
                             prefs.isStripMetadataEnabled()
                     );
                     if (ok) {
-                        MediaStoreHelper.deleteScreenshotSilently(getApplicationContext(), null, screenshotUri);
                         Toast.makeText(getApplicationContext(), "Saved privately", Toast.LENGTH_SHORT).show();
+                        MediaStoreHelper.deleteScreenshotSilently(getApplicationContext(), null, screenshotUri);
                     } else {
                         Toast.makeText(getApplicationContext(), "Could not save privately", Toast.LENGTH_SHORT).show();
                     }
-                    removeActiveOverlay();
                 }
 
                 @Override
@@ -528,7 +528,7 @@ public class ScreenshotInterceptService extends Service {
         }
 
         Intent editorIntent = new Intent(getApplicationContext(), ScreenshotEditorActivity.class);
-        editorIntent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_CLEAR_TOP | Intent.FLAG_ACTIVITY_SINGLE_TOP);
+        editorIntent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_NO_ANIMATION);
         editorIntent.putExtra(ScreenshotEditorActivity.EXTRA_SCREENSHOT_URI, screenshotUri.toString());
         startActivity(editorIntent);
     }

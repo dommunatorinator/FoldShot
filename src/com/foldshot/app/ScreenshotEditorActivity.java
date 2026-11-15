@@ -23,7 +23,7 @@ public class ScreenshotEditorActivity extends Activity implements OneUiSmartCapt
         if (context == null || targetUri == null || Uri.EMPTY.equals(targetUri)) return;
         try {
             Intent intent = new Intent(context, ScreenshotEditorActivity.class);
-            intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_CLEAR_TOP | Intent.FLAG_ACTIVITY_SINGLE_TOP);
+            intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_NO_ANIMATION);
             intent.putExtra(EXTRA_DELETE_ONLY_URI, targetUri.toString());
             context.startActivity(intent);
         } catch (Exception ignored) {
@@ -35,9 +35,23 @@ public class ScreenshotEditorActivity extends Activity implements OneUiSmartCapt
     private Uri screenshotUri = Uri.EMPTY;
     private Bitmap screenshotBitmap;
 
+    private void finishSilently() {
+        finishAndRemoveTask();
+        overridePendingTransition(0, 0);
+    }
+
+    private void ensureCaptureView() {
+        if (captureView == null) {
+            captureView = new OneUiSmartCaptureView(this, prefs, this);
+            captureView.setWindowStartsBelowStatusBar(false);
+            setContentView(captureView);
+        }
+    }
+
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
+        overridePendingTransition(0, 0);
         if (Build.VERSION.SDK_INT >= 30) {
             getWindow().setDecorFitsSystemWindows(false);
             WindowManager.LayoutParams lp = getWindow().getAttributes();
@@ -53,41 +67,43 @@ public class ScreenshotEditorActivity extends Activity implements OneUiSmartCapt
         if (prefs.isSecureOverlayEnabled()) {
             getWindow().addFlags(WindowManager.LayoutParams.FLAG_SECURE);
         }
-        captureView = new OneUiSmartCaptureView(this, prefs, this);
-        captureView.setWindowStartsBelowStatusBar(false);
-        setContentView(captureView);
         handleIntent(getIntent());
     }
 
     @Override
     protected void onNewIntent(Intent intent) {
         super.onNewIntent(intent);
+        setIntent(intent);
         handleIntent(intent);
     }
 
     private void handleIntent(Intent intent) {
-        if (intent == null) return;
+        if (intent == null) {
+            finishSilently();
+            return;
+        }
         String deleteOnlyRaw = intent.getStringExtra(EXTRA_DELETE_ONLY_URI);
         if (deleteOnlyRaw != null && !deleteOnlyRaw.isEmpty()) {
             if (captureView != null) {
                 captureView.setVisibility(android.view.View.GONE);
             }
             Uri target = Uri.parse(deleteOnlyRaw);
-            boolean deleted = MediaStoreHelper.deleteScreenshotSilently(this, this, target);
-            if (deleted) {
-                finishAndRemoveTask();
+            int status = MediaStoreHelper.deleteScreenshotWithStatus(this, this, target);
+            if (status != MediaStoreHelper.DELETE_STATUS_PROMPT_SHOWN) {
+                finishSilently();
             }
             return;
         }
-        if (captureView != null) {
-            captureView.setVisibility(android.view.View.VISIBLE);
-        }
         String rawUri = intent.getStringExtra(EXTRA_SCREENSHOT_URI);
-        if (rawUri != null) {
-            screenshotUri = Uri.parse(rawUri);
-            screenshotBitmap = MediaStoreHelper.loadBitmap(this, screenshotUri);
-            captureView.setScreenshotBitmap(screenshotBitmap);
+        if (rawUri == null || rawUri.isEmpty()) {
+            finishSilently();
+            return;
         }
+        ensureCaptureView();
+        captureView.setVisibility(android.view.View.VISIBLE);
+        screenshotUri = Uri.parse(rawUri);
+        screenshotBitmap = MediaStoreHelper.loadBitmap(this, screenshotUri);
+        captureView.setScreenshotBitmap(screenshotBitmap);
     }
 
     private Bitmap cropAndApplyMarkups(RectF normalizedCrop) {
@@ -104,9 +120,9 @@ public class ScreenshotEditorActivity extends Activity implements OneUiSmartCapt
     public void onCopyAndDelete(RectF normalizedCrop) {
         Bitmap cropped = cropAndApplyMarkups(normalizedCrop);
         MediaStoreHelper.copyBitmapToClipboard(this, cropped);
-        boolean deleted = MediaStoreHelper.deleteScreenshotSilently(this, this, screenshotUri);
-        if (deleted) {
-            finishAndRemoveTask();
+        int status = MediaStoreHelper.deleteScreenshotWithStatus(this, this, screenshotUri);
+        if (status != MediaStoreHelper.DELETE_STATUS_PROMPT_SHOWN) {
+            finishSilently();
         }
     }
 
@@ -161,9 +177,9 @@ public class ScreenshotEditorActivity extends Activity implements OneUiSmartCapt
         );
         if (ok) {
             Toast.makeText(this, "Saved privately", Toast.LENGTH_SHORT).show();
-            boolean deleted = MediaStoreHelper.deleteScreenshotSilently(this, this, screenshotUri);
-            if (deleted) {
-                finishAndRemoveTask();
+            int status = MediaStoreHelper.deleteScreenshotWithStatus(this, this, screenshotUri);
+            if (status != MediaStoreHelper.DELETE_STATUS_PROMPT_SHOWN) {
+                finishSilently();
             }
         } else {
             Toast.makeText(this, "Could not save privately", Toast.LENGTH_SHORT).show();
@@ -173,40 +189,37 @@ public class ScreenshotEditorActivity extends Activity implements OneUiSmartCapt
     @Override
     public void onPickAlbumForSlot(int slotIndex) {
         startActivity(new Intent(this, MainActivity.class));
-        finishAndRemoveTask();
+        finishSilently();
     }
 
     @Override
     public void onTriggerScrollCapture() {
-        finishAndRemoveTask();
+        finishSilently();
     }
 
     @Override
     public void onShare(RectF normalizedCrop) {
         Bitmap cropped = cropAndApplyMarkups(normalizedCrop);
         MediaStoreHelper.shareBitmap(this, cropped);
-        finishAndRemoveTask();
+        finishSilently();
     }
 
     @Override
     public void onOpenSettings() {
         startActivity(new Intent(this, MainActivity.class));
-        finishAndRemoveTask();
+        finishSilently();
     }
 
     @Override
     public void onCloseOverlay() {
-        finishAndRemoveTask();
+        finishSilently();
     }
 
     @Override
     protected void onActivityResult(int requestCode, int resultCode, Intent data) {
         super.onActivityResult(requestCode, resultCode, data);
         if (requestCode == MediaStoreHelper.REQ_DELETE_SCREENSHOT) {
-            if (resultCode == Activity.RESULT_OK
-                    || (getIntent() != null && getIntent().hasExtra(EXTRA_DELETE_ONLY_URI))) {
-                finishAndRemoveTask();
-            }
+            finishSilently();
         }
     }
 }

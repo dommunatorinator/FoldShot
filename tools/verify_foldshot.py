@@ -87,8 +87,11 @@ def test_manifest_and_play_protect():
     assert_true(".ScreenshotEditorActivity" in activities, "ScreenshotEditorActivity fallback declared")
     ed_act = activities[".ScreenshotEditorActivity"]
     assert_true(
-        ed_act.attrib.get(f"{ANDROID_NS}autoRemoveFromRecents", "false") == "true",
-        "ScreenshotEditorActivity auto-removes cleanly from Recents after crop"
+        ed_act.attrib.get(f"{ANDROID_NS}autoRemoveFromRecents", "false") == "true"
+        and ed_act.attrib.get(f"{ANDROID_NS}excludeFromRecents", "false") == "true"
+        and ed_act.attrib.get(f"{ANDROID_NS}taskAffinity", "") == "com.foldshot.app.editor"
+        and ed_act.attrib.get(f"{ANDROID_NS}launchMode", "") == "singleTask",
+        "ScreenshotEditorActivity runs in an isolated singleTask affinity excluded/auto-removed from Recents so it never opens MainActivity"
     )
 
     assert_true(".HiddenVaultActivity" in activities, "HiddenVaultActivity declared")
@@ -424,10 +427,13 @@ def test_security_and_universal_oem_features():
     )
     assert_true(
         "resolveContentUriForSource" in helper_src
-        and "deleteContentUriWithPromptFallback" in helper_src
+        and "deleteContentUriWithStatus" in helper_src
+        and "deleteScreenshotWithStatus" in helper_src
+        and "contentUriExists" in helper_src
         and "EXTRA_DELETE_ONLY_URI" in editor_src
-        and "launchDeletePrompt" in editor_src,
-        "Folder move & Copy & Delete resolve file:// URIs and prompt fallback cleanly without leaving duplicates in DCIM/Screenshots"
+        and "launchDeletePrompt" in editor_src
+        and "finishSilently" in editor_src,
+        "Folder move, Copy & Delete, and Save Cropped resolve URIs and isolate delete prompts without opening MainActivity"
     )
 
     # 5n. Zero-Lag Overlay Launch, Staged Tier-1/Tier-2 Loading & Background Detection

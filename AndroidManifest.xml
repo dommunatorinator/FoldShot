@@ -46,13 +46,17 @@
             </intent-filter>
         </activity>
 
-        <!-- Translucent Screenshot Overlay Fallback Activity -->
+        <!-- Translucent Screenshot Overlay Fallback & Isolated Delete Prompt Activity -->
         <activity
             android:name=".ScreenshotEditorActivity"
             android:exported="false"
+            android:taskAffinity="com.foldshot.app.editor"
+            android:excludeFromRecents="true"
             android:noHistory="true"
             android:autoRemoveFromRecents="true"
-            android:launchMode="singleTop"
+            android:allowTaskReparenting="false"
+            android:finishOnTaskLaunch="true"
+            android:launchMode="singleTask"
             android:theme="@android:style/Theme.Translucent.NoTitleBar.Fullscreen"
             android:configChanges="screenSize|smallestScreenSize|screenLayout|orientation|density" />
 
