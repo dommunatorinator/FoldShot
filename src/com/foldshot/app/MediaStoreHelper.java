@@ -1700,6 +1700,31 @@ public class MediaStoreHelper {
         return deleteContentUriWithStatus(context, optionalActivity, resolvedUri);
     }
 
+    @SuppressWarnings("deprecation")
+    private static boolean tryDeleteBackedFile(ContentResolver resolver, Uri contentUri) {
+        if (resolver == null || contentUri == null) return false;
+        try (Cursor c = resolver.query(contentUri, new String[]{MediaStore.Images.Media.DATA}, null, null, null)) {
+            if (c != null && c.moveToFirst()) {
+                int col = c.getColumnIndex(MediaStore.Images.Media.DATA);
+                if (col >= 0) {
+                    String path = c.getString(col);
+                    if (path != null && !path.isEmpty()) {
+                        File f = new File(path);
+                        if (f.exists() && f.delete()) {
+                            try {
+                                resolver.delete(contentUri, null, null);
+                            } catch (Exception ignored) {
+                            }
+                            return true;
+                        }
+                    }
+                }
+            }
+        } catch (Exception ignored) {
+        }
+        return false;
+    }
+
     private static int deleteContentUriWithStatus(Context context, Activity optionalActivity, Uri contentUri) {
         if (contentUri == null || Uri.EMPTY.equals(contentUri)) return DELETE_STATUS_DELETED;
         if (!"content".equalsIgnoreCase(contentUri.getScheme())) return DELETE_STATUS_FAILED;
@@ -1726,25 +1751,24 @@ public class MediaStoreHelper {
         } catch (Exception ignored) {
         }
 
-        if (Build.VERSION.SDK_INT >= 30) {
-            if (optionalActivity != null) {
-                try {
-                    PendingIntent pi = MediaStore.createDeleteRequest(resolver, Collections.singletonList(contentUri));
-                    optionalActivity.startIntentSenderForResult(
-                            pi.getIntentSender(),
-                            REQ_DELETE_SCREENSHOT,
-                            null, 0, 0, 0
-                    );
-                    return DELETE_STATUS_PROMPT_SHOWN;
-                } catch (Exception ignored) {
-                }
-            } else {
-                ScreenshotEditorActivity.launchDeletePrompt(context, contentUri);
+        if (tryDeleteBackedFile(resolver, contentUri) || !contentUriExists(resolver, contentUri)) {
+            return DELETE_STATUS_DELETED;
+        }
+
+        // Only show Android's interactive delete confirmation when already running inside an Activity.
+        // Never launch an Activity from the background overlay service, which steals focus and
+        // minimizes YouTube, Shorts, Facebook Reels, and other video players into PiP/background.
+        if (Build.VERSION.SDK_INT >= 30 && optionalActivity != null) {
+            try {
+                PendingIntent pi = MediaStore.createDeleteRequest(resolver, Collections.singletonList(contentUri));
+                optionalActivity.startIntentSenderForResult(
+                        pi.getIntentSender(),
+                        REQ_DELETE_SCREENSHOT,
+                        null, 0, 0, 0
+                );
                 return DELETE_STATUS_PROMPT_SHOWN;
+            } catch (Exception ignored) {
             }
-        } else if (Build.VERSION.SDK_INT == 29 && optionalActivity == null) {
-            ScreenshotEditorActivity.launchDeletePrompt(context, contentUri);
-            return DELETE_STATUS_PROMPT_SHOWN;
         }
         return DELETE_STATUS_FAILED;
     }

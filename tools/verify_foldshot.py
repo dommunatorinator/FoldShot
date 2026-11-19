@@ -425,15 +425,19 @@ def test_security_and_universal_oem_features():
         and "\"DCIM/FoldShot Vault/\"" in vault_mgr_src,
         "Favorite folders & Vault restores route and create inside DCIM/ instead of Pictures/"
     )
+    del_start = helper_src.find("private static int deleteContentUriWithStatus(")
+    del_end = helper_src.find("public static String resolveRelativePathForAlbum(", del_start)
+    assert_true(del_start > 0 and del_end > del_start, "Located deleteContentUriWithStatus body")
+    del_body = helper_src[del_start:del_end]
     assert_true(
         "resolveContentUriForSource" in helper_src
-        and "deleteContentUriWithStatus" in helper_src
         and "deleteScreenshotWithStatus" in helper_src
         and "contentUriExists" in helper_src
-        and "EXTRA_DELETE_ONLY_URI" in editor_src
-        and "launchDeletePrompt" in editor_src
+        and "tryDeleteBackedFile" in helper_src
+        and "ScreenshotEditorActivity.launchDeletePrompt" not in del_body
+        and "FLAG_NOT_FOCUSABLE" in service_src
         and "finishSilently" in editor_src,
-        "Folder move, Copy & Delete, and Save Cropped resolve URIs and isolate delete prompts without opening MainActivity"
+        "Folder move, Copy & Delete, and Save Cropped never launch background Activity or steal focus from videos/Reels"
     )
 
     # 5n. Zero-Lag Overlay Launch, Staged Tier-1/Tier-2 Loading & Background Detection

@@ -288,7 +288,9 @@ public class MainActivity extends Activity {
 
         permCard.addView(createPermissionRow(
                 "Silent delete & move",
-                "Deletes and moves screenshots without 'Allow to delete' popups (Media management)",
+                hasSilentDelete
+                        ? "Active — removes originals silently in background without popups or pausing videos"
+                        : "Required to auto-delete originals silently without minimizing videos or popups",
                 hasSilentDelete ? "Active" : "Enable",
                 hasSilentDelete,
                 v -> MediaStoreHelper.requestSilentDeletePermission(this)

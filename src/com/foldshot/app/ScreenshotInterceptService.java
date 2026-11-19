@@ -314,6 +314,7 @@ public class ScreenshotInterceptService extends Service {
         int overlayHeight = Math.max(400, geo.screenHeightPx - geo.statusBarHeightPx);
 
         int flags = WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN
+                | WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE
                 | WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL;
         if (!safeFallback) {
             flags |= WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS;
@@ -375,7 +376,14 @@ public class ScreenshotInterceptService extends Service {
                     );
                     removeActiveOverlay();
                     MediaStoreHelper.copyBitmapToClipboard(getApplicationContext(), cropped);
-                    MediaStoreHelper.deleteScreenshotSilently(getApplicationContext(), null, screenshotUri);
+                    boolean deleted = MediaStoreHelper.deleteScreenshotSilently(getApplicationContext(), null, screenshotUri);
+                    if (!deleted && !MediaStoreHelper.hasSilentDeletePermission(getApplicationContext())) {
+                        Toast.makeText(
+                                getApplicationContext(),
+                                "Copied — enable 'Silent delete & move' in FoldShot to auto-delete",
+                                Toast.LENGTH_LONG
+                        ).show();
+                    }
                 }
 
                 @Override
@@ -423,7 +431,10 @@ public class ScreenshotInterceptService extends Service {
                                 getApplicationContext(), null, screenshotUri, currentBmp[0], albumName, false
                         );
                     }
-                    Toast.makeText(getApplicationContext(), "Moved to " + albumName, Toast.LENGTH_SHORT).show();
+                    String msg = MediaStoreHelper.hasSilentDeletePermission(getApplicationContext())
+                            ? "Moved to " + albumName
+                            : "Saved to " + albumName + " (enable 'Silent delete & move' to remove original)";
+                    Toast.makeText(getApplicationContext(), msg, Toast.LENGTH_SHORT).show();
                 }
 
                 @Override
@@ -445,8 +456,11 @@ public class ScreenshotInterceptService extends Service {
                             prefs.isStripMetadataEnabled()
                     );
                     if (ok) {
-                        Toast.makeText(getApplicationContext(), "Saved privately", Toast.LENGTH_SHORT).show();
-                        MediaStoreHelper.deleteScreenshotSilently(getApplicationContext(), null, screenshotUri);
+                        boolean deleted = MediaStoreHelper.deleteScreenshotSilently(getApplicationContext(), null, screenshotUri);
+                        String msg = (deleted || MediaStoreHelper.hasSilentDeletePermission(getApplicationContext()))
+                                ? "Saved privately"
+                                : "Saved privately (enable 'Silent delete & move' to auto-remove original)";
+                        Toast.makeText(getApplicationContext(), msg, Toast.LENGTH_SHORT).show();
                     } else {
                         Toast.makeText(getApplicationContext(), "Could not save privately", Toast.LENGTH_SHORT).show();
                     }
